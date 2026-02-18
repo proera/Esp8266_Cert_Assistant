@@ -1,6 +1,14 @@
 # Sistema de Polling ESP8266 - D1 Mini
 
-Sistema de polling que conecta o D1 Mini (ESP8266) à API de certificação, fazendo requisições HTTP a cada 2 segundos e controlando LEDs baseado nas respostas corretas recebidas.
+Sistema de polling que conecta o D1 Mini (ESP8266) à API de certificação, fazendo requisições HTTPS a cada 1.5 segundos e controlando LEDs baseado nas respostas corretas recebidas.
+
+## 🏗️ Arquitetura
+
+O projeto utiliza uma **arquitetura modular** com separação de responsabilidades:
+
+- **Config.h**: Configurações centralizadas (WiFi, API, pins, timings)
+- **WiFiManager**: Módulo dedicado para gerenciamento de conexão WiFi
+- **front_cert_assistant.ino**: Lógica principal de polling e controle de LEDs
 
 ## 📋 Requisitos
 
@@ -80,32 +88,41 @@ D7 (GPIO13) --> 220Ω --> (+) LED Branco (-) --> GND
 
 ## ⚙️ Configuração do Código
 
-### 1. Editar Credenciais WiFi
+### Editar Config.h
 
-Abra o arquivo `front_cert_assistant.ino` e edite as seguintes linhas (aproximadamente linha 20-21):
+Todas as configurações estão centralizadas no arquivo **`Config.h`**. Abra este arquivo e edite as seguintes seções:
+
+#### 1. Credenciais WiFi
 
 ```cpp
-const char* ssid = "SEU_WIFI_SSID";           // Alterar para o nome da sua rede WiFi
-const char* password = "SUA_SENHA_WIFI";      // Alterar para a senha da sua rede WiFi
+#define WIFI_SSID "SEU_WIFI_SSID"
+#define WIFI_PASSWORD "SUA_SENHA_WIFI"
 ```
 
 **Exemplo:**
 ```cpp
-const char* ssid = "MinhaRedeWiFi";
-const char* password = "minhaSenha123";
+#define WIFI_SSID "MinhaRedeWiFi"
+#define WIFI_PASSWORD "minhaSenha123"
 ```
 
-### 2. Verificar Endpoint da API
-
-O endpoint está configurado na linha 27:
+#### 2. Endpoint da API
 
 ```cpp
-const char* apiUrl = "https://certapi.proera.com.br/api/Esp8266/poll";
+#define API_URL "https://certapi.proera.com.br/api/Esp8266/poll"
 ```
 
 **Não é necessário alterar** este valor, a menos que o endpoint da API mude.
 
-## 📤 Upload do Código
+#### 3. Outras Configurações Disponíveis
+
+- ***Configure as credenciais WiFi** em `Config.h`
+2. Conecte o D1 Mini ao computador via cabo USB
+3. Abra o arquivo `front_cert_assistant.ino` no Arduino IDE
+4. Verifique se a board e porta estão corretas em `Tools`
+5. Clique em `Upload` (ou pressione `Ctrl+U`)
+6. Aguarde a compilação e upload do código
+7. Após o upload, abra o Serial Monitor (`Tools` → `Serial Monitor` ou `Ctrl+Shift+M`)
+8# 📤 Upload do Código
 
 1. Conecte o D1 Mini ao computador via cabo USB
 2. Abra o arquivo `front_cert_assistant.ino` no Arduino IDE
@@ -115,12 +132,13 @@ const char* apiUrl = "https://certapi.proera.com.br/api/Esp8266/poll";
 6. Após o upload, abra o Serial Monitor (`Tools` → `Serial Monitor` ou `Ctrl+Shift+M`)
 7. Configure o baud rate para **115200**
 
-## 📊 Funcionamento
-
-### Ciclo de Operação
-
-1. **Inicialização**
-   - O D1 Mini conecta-se ao WiFi
+## 📊 Funcionamento1.5 segundos)**
+   - Faz requisição HTTPS GET ao endpoint da API
+   - Recebe resposta JSON
+   - Extrai campos `isMultipleChoice` e `correctAnswers`
+   - Atualiza LEDs baseado nas respostas corretas
+   - Exibe dados na Serial
+   - Tempo de exibição varia: 5s (única escolha) ou 8s (múltipla escolha)ao WiFi
    - Todos os LEDs são inicializados e desligados
    - Sistema entra em modo de polling
 
@@ -173,7 +191,7 @@ LEDs atualizados:
     LED B (Amarelo): DESLIGADO
     LED C (Vermelho): DESLIGADO
     LED D (Azul): DESLIGADO
-    LED E (Branco): DESLIGADO
+    LED E (Branco): DESLI
 
 ⏳ Aguardando próximo poll (2 segundos)...
 ```
@@ -259,29 +277,41 @@ O sistema extrai apenas dois campos:
 2. Certifique-se de instalar a versão 6.x (não a 5.x)
 3. Reinicie o Arduino IDE
 
-## 📝 Personalização
+Todas as personalizações devem ser feitas no arquivo **`Config.h`**.
 
 ### Alterar Intervalo de Polling
 
-Para mudar o intervalo de polling de 2 segundos para outro valor, edite a linha 32:
-
 ```cpp
-const unsigned long POLLING_INTERVAL = 2000;  // Valor em milissegundos
+#define POLLING_INTERVAL_MS 1500  // Valor em milissegundos
 ```
 
 **Exemplos**:
+- 3 segundos: `3000`
 - 5 segundos: `5000`
 - 10 segundos: `10000`
-- 30 segundos: `30000`
+
+### Alterar Tempos de Exibição
+
+```cpp
+#define DISPLAY_DURATION_SINGLE_MS 5000   // Questão única escolha
+#define DISPLAY_DURATION_MULTIPLE_MS 8000 // Questão múltipla escolha
+```
 
 ### Alterar Pinos dos LEDs
 
-Para usar outros pinos, edite as linhas 29-33:
+```cpp
+#define LED_PIN_A D3  // Altere D3 para outro pino (ex: D4)
+#define LED_PIN_B D2  // Altere D2 para outro pino
+// ... e assim por diante
+```
+
+**Pinos disponíveis no D1 Mini**: D0, D1, D2, D3, D4, D5, D6, D7, D8
+
+### Alterar Tentativas de Conexão WiFi
 
 ```cpp
-#define LED_A D3  // Altere D3 para outro pino (ex: D4)
-#define LED_B D2  // Altere D2 para outro pino
-// ... e assim por diante
+#define WIFI_MAX_RETRY_ATTEMPTS 30  // Número de tentativas
+#define WIFI_RETRY_DELAY_MS 500     // Delay entre tentativas
 ```
 
 **Pinos disponíveis no D1 Mini**: D0, D1, D2, D3, D4, D5, D6, D7, D8
