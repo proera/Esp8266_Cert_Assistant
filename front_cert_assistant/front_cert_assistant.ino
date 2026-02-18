@@ -15,87 +15,40 @@
 #include <ESP8266HTTPClient.h>
 #include <WiFiClientSecure.h>
 #include <ArduinoJson.h>
+#include "Config.h"
+#include "WiFiManager.h"
 
 // ========================================
-// CONFIGURAÇÕES WiFi (HARDCODED)
+// VARIÁVEIS GLOBAIS
 // ========================================
-const char* ssid = "Sagaz";             // Alterar para o nome da sua rede WiFi
-const char* password = "Amarelo%4815";  // Alterar para a senha da sua rede WiFi
-
-// ========================================
-// CONFIGURAÇÕES API
-// ========================================
-const char* apiUrl = "https://certapi.proera.com.br/api/Esp8266/poll";
-
-// ========================================
-// CONFIGURAÇÕES DE PINOS DOS LEDs
-// ========================================
-#define LED_A D3  // GPIO0  - LED Verde (Resposta A)
-#define LED_B D2  // GPIO4  - LED Amarelo (Resposta B)
-#define LED_C D5  // GPIO14 - LED Vermelho (Resposta C)
-#define LED_D D1  // GPIO5  - LED Azul (Resposta D)
-#define LED_E D7  // GPIO13 - LED Branco (Resposta E)
-
-// ========================================
-// CONFIGURAÇÕES DE TIMING
-// ========================================
-const unsigned long POLLING_INTERVAL = 1500;  // 2 segundos em milissegundos
 unsigned long lastPollTime = 0;
 unsigned long pollCount = 0;
 
 // ========================================
 // OBJETOS GLOBAIS
 // ========================================
+WiFiManager wifiManager;
 WiFiClientSecure wifiClient;
 HTTPClient http;
 
-// ========================================
-// FUNÇÃO: Conectar ao WiFi
-// ========================================
-void connectToWiFi() {
-  Serial.println("\n=================================");
-  Serial.print("Conectando ao WiFi: ");
-  Serial.println(ssid);
-  Serial.println("=================================");
 
-  WiFi.mode(WIFI_STA);
-  WiFi.begin(ssid, password);
-
-  int attempts = 0;
-  while (WiFi.status() != WL_CONNECTED && attempts < 30) {
-    delay(500);
-    Serial.print(".");
-    attempts++;
-  }
-
-  if (WiFi.status() == WL_CONNECTED) {
-    Serial.println("\n✓ WiFi conectado com sucesso!");
-    Serial.print("Endereço IP: ");
-    Serial.println(WiFi.localIP());
-    Serial.println("=================================\n");
-  } else {
-    Serial.println("\n✗ Falha ao conectar ao WiFi!");
-    Serial.println("Verifique as credenciais e tente novamente.");
-    Serial.println("=================================\n");
-  }
-}
 
 // ========================================
 // FUNÇÃO: Inicializar LEDs
 // ========================================
 void initializeLEDs() {
-  pinMode(LED_A, OUTPUT);
-  pinMode(LED_B, OUTPUT);
-  pinMode(LED_C, OUTPUT);
-  pinMode(LED_D, OUTPUT);
-  pinMode(LED_E, OUTPUT);
+  pinMode(LED_PIN_A, OUTPUT);
+  pinMode(LED_PIN_B, OUTPUT);
+  pinMode(LED_PIN_C, OUTPUT);
+  pinMode(LED_PIN_D, OUTPUT);
+  pinMode(LED_PIN_E, OUTPUT);
 
   // Desliga todos os LEDs inicialmente
-  digitalWrite(LED_A, LOW);
-  digitalWrite(LED_B, LOW);
-  digitalWrite(LED_C, LOW);
-  digitalWrite(LED_D, LOW);
-  digitalWrite(LED_E, LOW);
+  digitalWrite(LED_PIN_A, LOW);
+  digitalWrite(LED_PIN_B, LOW);
+  digitalWrite(LED_PIN_C, LOW);
+  digitalWrite(LED_PIN_D, LOW);
+  digitalWrite(LED_PIN_E, LOW);
 
   Serial.println("✓ LEDs inicializados");
 }
@@ -104,11 +57,11 @@ void initializeLEDs() {
 // FUNÇÃO: Desligar todos os LEDs
 // ========================================
 void turnOffAllLEDs() {
-  digitalWrite(LED_A, LOW);
-  digitalWrite(LED_B, LOW);
-  digitalWrite(LED_C, LOW);
-  digitalWrite(LED_D, LOW);
-  digitalWrite(LED_E, LOW);
+  digitalWrite(LED_PIN_A, LOW);
+  digitalWrite(LED_PIN_B, LOW);
+  digitalWrite(LED_PIN_C, LOW);
+  digitalWrite(LED_PIN_D, LOW);
+  digitalWrite(LED_PIN_E, LOW);
 }
 
 // ========================================
@@ -125,19 +78,19 @@ void updateLEDs(JsonArray correctAnswers, bool isMultipleChoice) {
     String answerStr = answer.as<String>();
 
     if (answerStr == "A") {
-      digitalWrite(LED_A, HIGH);
+      digitalWrite(LED_PIN_A, HIGH);
       Serial.println("  ✓ LED A (Verde): LIGADO");
     } else if (answerStr == "B") {
-      digitalWrite(LED_B, HIGH);
+      digitalWrite(LED_PIN_B, HIGH);
       Serial.println("  ✓ LED B (Amarelo): LIGADO");
     } else if (answerStr == "C") {
-      digitalWrite(LED_C, HIGH);
+      digitalWrite(LED_PIN_C, HIGH);
       Serial.println("  ✓ LED C (Vermelho): LIGADO");
     } else if (answerStr == "D") {
-      digitalWrite(LED_D, HIGH);
+      digitalWrite(LED_PIN_D, HIGH);
       Serial.println("  ✓ LED D (Azul): LIGADO");
     } else if (answerStr == "E") {
-      digitalWrite(LED_E, HIGH);
+      digitalWrite(LED_PIN_E, HIGH);
       Serial.println("  ✓ LED E (Branco): LIGADO");
     }
   }
@@ -149,11 +102,11 @@ void updateLEDs(JsonArray correctAnswers, bool isMultipleChoice) {
   };
   
   LED leds[] = {
-    {LED_A, "LED A (Verde)"},
-    {LED_B, "LED B (Amarelo)"},
-    {LED_C, "LED C (Vermelho)"},
-    {LED_D, "LED D (Azul)"},
-    {LED_E, "LED E (Branco)"}
+    {LED_PIN_A, "LED A (Verde)"},
+    {LED_PIN_B, "LED B (Amarelo)"},
+    {LED_PIN_C, "LED C (Vermelho)"},
+    {LED_PIN_D, "LED D (Azul)"},
+    {LED_PIN_E, "LED E (Branco)"}
   };
 
   // Mostra os LEDs que ficaram desligados
@@ -166,7 +119,7 @@ void updateLEDs(JsonArray correctAnswers, bool isMultipleChoice) {
   }
 
   // Define delay baseado no tipo de questão
-  int delayTime = isMultipleChoice ? 8000 : 5000;
+  int delayTime = isMultipleChoice ? DISPLAY_DURATION_MULTIPLE_MS : DISPLAY_DURATION_SINGLE_MS;
   delay(delayTime);
 }
 
@@ -180,7 +133,7 @@ String makeHTTPRequest() {
   wifiClient.setInsecure();
 
   // Inicia a conexão HTTP
-  http.begin(wifiClient, apiUrl);
+  http.begin(wifiClient, API_URL);
 
   // Adiciona header Accept
   http.addHeader("Accept", "text/plain");
@@ -216,7 +169,7 @@ String makeHTTPRequest() {
 // ========================================
 void parseAndExtractData(String jsonString) {
   // Cria documento JSON com capacidade adequada
-  StaticJsonDocument<1024> doc;
+  StaticJsonDocument<JSON_BUFFER_SIZE> doc;
 
   // Deserializa o JSON
   DeserializationError error = deserializeJson(doc, jsonString);
@@ -289,7 +242,7 @@ void performPolling() {
 // ========================================
 void setup() {
   // Inicializa comunicação Serial
-  Serial.begin(115200);
+  Serial.begin(SERIAL_BAUD_RATE);
   delay(100);
 
   Serial.println("\n\n");
@@ -302,10 +255,10 @@ void setup() {
   initializeLEDs();
 
   // Conecta ao WiFi
-  connectToWiFi();
+  wifiManager.connect();
 
   // Verifica se conectou ao WiFi
-  if (WiFi.status() != WL_CONNECTED) {
+  if (!wifiManager.isConnected()) {
     Serial.println("⚠ Sistema iniciado sem conexão WiFi!");
     Serial.println("Tentando reconectar...\n");
   }
@@ -319,21 +272,20 @@ void setup() {
 // ========================================
 void loop() {
   // Verifica se está conectado ao WiFi
-  if (WiFi.status() != WL_CONNECTED) {
-    Serial.println("⚠ WiFi desconectado! Tentando reconectar...");
-    connectToWiFi();
-    delay(5000);
+  if (!wifiManager.isConnected()) {
+    wifiManager.reconnect();
+    delay(WIFI_RECONNECT_DELAY_MS);
     return;
   }
 
   // Verifica se passou o intervalo de polling (sistema não-bloqueante)
   unsigned long currentTime = millis();
 
-  if (currentTime - lastPollTime >= POLLING_INTERVAL) {
+  if (currentTime - lastPollTime >= POLLING_INTERVAL_MS) {
     lastPollTime = currentTime;
     performPolling();
   }
 
   // Pequeno delay para não sobrecarregar o processador
-  delay(10);
+  delay(LOOP_DELAY_MS);
 }
