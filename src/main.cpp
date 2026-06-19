@@ -1,292 +1,232 @@
 /*
- * Sistema de Polling ESP8266 - D1 Mini
- * 
- * Descrição: Sistema que faz polling a cada 2 segundos ao endpoint da API,
- * extrai dados JSON (isMultipleChoice e correctAnswers) e controla LEDs
- * baseado nas respostas corretas recebidas.
- * 
- * Hardware: D1 Mini (ESP8266)
- * 
+ * Sistema CertMind - Cliente de Stream ESP8266 (D1 Mini)
+ *
+ * Versão: 2.1
+ *
+ * Descrição: Consome o stream SSE da API CertMind por UMA conexão HTTP
+ * persistente (GET, texto claro, sem TLS) e aciona 5 LEDs (A-E) conforme
+ * cada situação emitida pelo backend (test, ilegível, single, multiple,
+ * yesno, dropdown, ordering, matching) e a saúde da conexão.
+ *
+ * O ESP8266 é apenas consumidor: abre o GET e fica escutando. Não faz POST,
+ * não envia imagem, não faz request/response.
+ *
+ * Hardware: D1 Mini (ESP8266) + 5 LEDs (posições/letras A-E => 1-5).
+ *
+ * Changelog:
+ *   2.1 - Correção: eventos com answerText longo (ex.: matching/ordering com
+ *         setas/acentos UTF-8) não acionavam os LEDs. O parse do JSON recebia o
+ *         buffer como const char*, fazendo o ArduinoJson COPIAR as strings para
+ *         o pool e estourar o StaticJsonDocument (NoMemory) -> handleAnswer dava
+ *         return silencioso. Agora o payload é passado como char* (buffer
+ *         mutável), ativando o modo zero-copy do ArduinoJson (uso do pool caiu
+ *         de ~507/512 para ~160/512). Erro de parse agora sinaliza leds.showError()
+ *         em vez de falhar em silêncio. Buffers SSE ampliados 2048 -> 4096.
+ *   2.0 - Polling HTTPS substituído por stream SSE persistente (WiFiClient).
+ *         Máquina de estados de LED cobrindo todas as situações do backend.
+ *         Reconexão automática com backoff. Removido HTTPClient/WiFiClientSecure.
+ *   1.0 - Versão inicial por polling.
+ *
  * Autor: Proera
- * Data: 2026-01-09
  */
 
 #include <Arduino.h>
 #include <ESP8266WiFi.h>
-#include <ESP8266HTTPClient.h>
-#include <WiFiClientSecure.h>
 #include <ArduinoJson.h>
 #include "Config.h"
 #include "WiFiManager.h"
-
-// ========================================
-// VARIÁVEIS GLOBAIS
-// ========================================
-unsigned long lastPollTime = 0;
-unsigned long pollCount = 0;
+#include "LedController.h"
+#include "SseClient.h"
 
 // ========================================
 // OBJETOS GLOBAIS
 // ========================================
 WiFiManager wifiManager;
-WiFiClientSecure wifiClient;
-HTTPClient http;
+LedController leds;
+SseClient sse;
 
+// Documento JSON reutilizado (com filtro) + filtro — globais para não estourar
+// a pilha do loop() do ESP8266.
+StaticJsonDocument<JSON_FILTER_SIZE> g_filter;
+StaticJsonDocument<JSON_DOC_SIZE> g_doc;
 
-
-// ========================================
-// FUNÇÃO: Inicializar LEDs
-// ========================================
-void initializeLEDs() {
-  pinMode(LED_PIN_A, OUTPUT);
-  pinMode(LED_PIN_B, OUTPUT);
-  pinMode(LED_PIN_C, OUTPUT);
-  pinMode(LED_PIN_D, OUTPUT);
-  pinMode(LED_PIN_E, OUTPUT);
-
-  // Desliga todos os LEDs inicialmente
-  digitalWrite(LED_PIN_A, LOW);
-  digitalWrite(LED_PIN_B, LOW);
-  digitalWrite(LED_PIN_C, LOW);
-  digitalWrite(LED_PIN_D, LOW);
-  digitalWrite(LED_PIN_E, LOW);
-
-  Serial.println("✓ LEDs inicializados");
-}
+unsigned long g_lastHeapLog = 0;
 
 // ========================================
-// FUNÇÃO: Desligar todos os LEDs
+// Decisão de LEDs a partir do payload do evento "answer"
 // ========================================
-void turnOffAllLEDs() {
-  digitalWrite(LED_PIN_A, LOW);
-  digitalWrite(LED_PIN_B, LOW);
-  digitalWrite(LED_PIN_C, LOW);
-  digitalWrite(LED_PIN_D, LOW);
-  digitalWrite(LED_PIN_E, LOW);
-}
+// payload é o buffer mutável do SseClient: o ArduinoJson parseia em zero-copy
+// (chaves/strings apontam para o buffer, sem cópia no pool). As strings extraídas
+// (ex.: answerText) são válidas durante toda esta função, pois o buffer só é
+// reescrito no próximo evento.
+void handleAnswer(char* payload) {
+  g_doc.clear();
+  DeserializationError err =
+      deserializeJson(g_doc, payload, DeserializationOption::Filter(g_filter));
 
-// ========================================
-// FUNÇÃO: Atualizar LEDs baseado nas respostas corretas
-// ========================================
-void updateLEDs(JsonArray correctAnswers, bool isMultipleChoice) {
-  // Primeiro, desliga todos os LEDs
-  turnOffAllLEDs();
-
-  Serial.println("\nLEDs atualizados:");
-
-  // Percorre o array de respostas corretas
-  for (JsonVariant answer : correctAnswers) {
-    String answerStr = answer.as<String>();
-
-    if (answerStr == "A") {
-      digitalWrite(LED_PIN_A, HIGH);
-      Serial.println("  ✓ LED A (Verde): LIGADO");
-    } else if (answerStr == "B") {
-      digitalWrite(LED_PIN_B, HIGH);
-      Serial.println("  ✓ LED B (Amarelo): LIGADO");
-    } else if (answerStr == "C") {
-      digitalWrite(LED_PIN_C, HIGH);
-      Serial.println("  ✓ LED C (Vermelho): LIGADO");
-    } else if (answerStr == "D") {
-      digitalWrite(LED_PIN_D, HIGH);
-      Serial.println("  ✓ LED D (Azul): LIGADO");
-    } else if (answerStr == "E") {
-      digitalWrite(LED_PIN_E, HIGH);
-      Serial.println("  ✓ LED E (Branco): LIGADO");
-    }
-  }
-
-  // Estrutura de dados para facilitar iteração sobre os LEDs
-  struct LED {
-    int pin;
-    const char* name;
-  };
-  
-  LED leds[] = {
-    {LED_PIN_A, "LED A (Verde)"},
-    {LED_PIN_B, "LED B (Amarelo)"},
-    {LED_PIN_C, "LED C (Vermelho)"},
-    {LED_PIN_D, "LED D (Azul)"},
-    {LED_PIN_E, "LED E (Branco)"}
-  };
-
-  // Mostra os LEDs que ficaram desligados
-  for (int i = 0; i < 5; i++) {
-    if (digitalRead(leds[i].pin) == LOW) {
-      Serial.print("    ");
-      Serial.print(leds[i].name);
-      Serial.println(": DESLIGADO");
-    }
-  }
-
-  // Define delay baseado no tipo de questão
-  int delayTime = isMultipleChoice ? DISPLAY_DURATION_MULTIPLE_MS : DISPLAY_DURATION_SINGLE_MS;
-  delay(delayTime);
-}
-
-// ========================================
-// FUNÇÃO: Fazer requisição HTTP GET
-// ========================================
-String makeHTTPRequest() {
-  String payload = "";
-
-  // Configura cliente HTTPS (desabilita validação de certificado)
-  wifiClient.setInsecure();
-
-  // Inicia a conexão HTTP
-  http.begin(wifiClient, API_URL);
-
-  // Adiciona header Accept
-  http.addHeader("Accept", "text/plain");
-
-  // Faz a requisição GET
-  int httpCode = http.GET();
-
-  // Verifica o código de resposta
-  if (httpCode > 0) {
-    Serial.print("Status HTTP: ");
-    Serial.println(httpCode);
-
-    if (httpCode == HTTP_CODE_OK) {
-      payload = http.getString();
-      Serial.println("✓ Response recebido com sucesso!");
-    } else {
-      Serial.print("✗ Erro HTTP: ");
-      Serial.println(httpCode);
-    }
-  } else {
-    Serial.print("✗ Falha na requisição. Erro: ");
-    Serial.println(http.errorToString(httpCode));
-  }
-
-  // Finaliza a conexão
-  http.end();
-
-  return payload;
-}
-
-// ========================================
-// FUNÇÃO: Parsear JSON e extrair dados
-// ========================================
-void parseAndExtractData(String jsonString) {
-  // Cria documento JSON com capacidade adequada
-  StaticJsonDocument<JSON_BUFFER_SIZE> doc;
-
-  // Deserializa o JSON
-  DeserializationError error = deserializeJson(doc, jsonString);
-
-  if (error) {
-    Serial.print("✗ Erro ao parsear JSON: ");
-    Serial.println(error.c_str());
+  if (err) {
+    // Em vez de falhar em silêncio (que tornava esse tipo de bug invisível),
+    // sinaliza nos próprios LEDs que um evento chegou mas não pôde ser exibido.
+    Serial.print(F("[JSON] Erro ao parsear: "));
+    Serial.println(err.c_str());
+    leds.showError();
     return;
   }
 
-  // Verifica se há dados disponíveis
-  bool hasData = doc["hasData"] | false;
+  bool hasData = g_doc["hasData"] | false;
+  const char* qt = g_doc["questionType"] | "";
+  const char* answerText = g_doc["answerText"] | "";
 
+  Serial.print(F("[ANSWER] questionType="));
+  Serial.print(qt);
+  Serial.print(F(" hasData="));
+  Serial.print(hasData ? F("true") : F("false"));
+  Serial.print(F(" answerText=\""));
+  Serial.print(answerText);
+  Serial.println(F("\""));
+
+  // 1) test => varredura de conectividade (não é resposta real).
+  if (strcmp(qt, "test") == 0) {
+    Serial.println(F("[ANSWER] evento de teste -> chase A->E"));
+    leds.showTestChase();
+    return;
+  }
+
+  // 2) ilegível => padrão de erro.
   if (!hasData) {
-    Serial.println("⚠ Sem dados disponíveis (hasData: false)");
-    turnOffAllLEDs();
+    Serial.println(F("[ANSWER] questão ilegível -> erro (5 LEDs piscando)"));
+    leds.showError();
     return;
   }
 
-  Serial.println("\n--- Dados Extraídos ---");
-
-  // Extrai isMultipleChoice
-  bool isMultipleChoice = doc["data"]["isMultipleChoice"] | false;
-  Serial.print("isMultipleChoice: ");
-  Serial.println(isMultipleChoice ? "true" : "false");
-
-  // Extrai correctAnswers (array)
-  JsonArray correctAnswers = doc["data"]["correctAnswers"];
-
-  Serial.print("correctAnswers: [");
-  for (size_t i = 0; i < correctAnswers.size(); i++) {
-    if (i > 0) Serial.print(", ");
-    Serial.print(correctAnswers[i].as<String>());
+  // 3) single / multiple => letras.
+  if (strcmp(qt, "single") == 0 || strcmp(qt, "multiple") == 0) {
+    JsonArray letters = g_doc["letters"];
+    uint8_t pos[LED_COUNT];
+    uint8_t n = 0;
+    for (JsonVariant v : letters) {
+      const char* s = v.as<const char*>();
+      if (s && s[0] && !s[1]) {  // exatamente 1 caractere
+        char c = toupper((unsigned char)s[0]);
+        if (c >= 'A' && c <= 'E') {
+          pos[n++] = (uint8_t)(c - 'A' + 1);
+          if (n >= LED_COUNT) break;
+        }
+      }
+    }
+    if (n == 0) {
+      Serial.println(F("[ANSWER] letras vazias/inválidas -> erro"));
+      leds.showError();
+      return;
+    }
+    if (strcmp(qt, "single") == 0) {
+      leds.showSingle(pos[0]);
+    } else {
+      leds.showMultiple(pos, n);
+    }
+    return;
   }
-  Serial.println("]");
 
-  Serial.println("-----------------------");
+  // 4a) yesno => flags (sequencial).
+  if (strcmp(qt, "yesno") == 0) {
+    int slotCount = g_doc["slotCount"] | 0;
+    JsonArray flagsArr = g_doc["flags"];
+    bool flags[LED_COUNT];
+    uint8_t n = 0;
+    for (JsonVariant v : flagsArr) {
+      if (n >= LED_COUNT) break;
+      flags[n++] = v.as<bool>();
+    }
+    if (slotCount > LED_COUNT) {
+      Serial.print(F("[ANSWER] yesno com slotCount="));
+      Serial.print(slotCount);
+      Serial.println(F(" — exibindo só as 5 primeiras (truncado)"));
+    }
+    leds.showYesNo(flags, n);
+    return;
+  }
 
-  // Atualiza os LEDs baseado nas respostas corretas e tipo de questão
-  updateLEDs(correctAnswers, isMultipleChoice);
+  // 4b) dropdown / ordering / matching => slots (sequencial).
+  if (strcmp(qt, "dropdown") == 0 || strcmp(qt, "ordering") == 0 ||
+      strcmp(qt, "matching") == 0) {
+    int slotCount = g_doc["slotCount"] | 0;
+    JsonArray slotsArr = g_doc["slots"];
+    uint8_t slots[LED_COUNT];
+    uint8_t n = 0;
+    for (JsonVariant v : slotsArr) {
+      if (n >= LED_COUNT) break;
+      slots[n++] = (uint8_t)(v.as<int>());
+    }
+    if (slotCount > LED_COUNT) {
+      Serial.print(F("[ANSWER] slots com slotCount="));
+      Serial.print(slotCount);
+      Serial.println(F(" — exibindo só os 5 primeiros (truncado)"));
+    }
+    leds.showSlots(slots, n);
+    return;
+  }
+
+  // questionType desconhecido => trata como erro.
+  Serial.print(F("[ANSWER] questionType desconhecido: "));
+  Serial.println(qt);
+  leds.showError();
 }
 
 // ========================================
-// FUNÇÃO: Executar Polling
-// ========================================
-void performPolling() {
-  pollCount++;
-
-  Serial.println("\n╔════════════════════════════════════════╗");
-  Serial.print("║ Poll #");
-  Serial.print(pollCount);
-  Serial.println(" - Requisição iniciada...");
-  Serial.println("╚════════════════════════════════════════╝");
-
-  // Faz a requisição HTTP
-  String response = makeHTTPRequest();
-
-  // Se recebeu resposta, parseia o JSON
-  if (response.length() > 0) {
-    parseAndExtractData(response);
-  } else {
-    Serial.println("✗ Resposta vazia ou erro na requisição");
-  }
-
-  Serial.println("\n⏳ Aguardando próximo poll (2 segundos)...\n");
-}
-
-// ========================================
-// SETUP: Configuração inicial
+// SETUP
 // ========================================
 void setup() {
-  // Inicializa comunicação Serial
   Serial.begin(SERIAL_BAUD_RATE);
   delay(100);
 
-  Serial.println("\n\n");
-  Serial.println("╔═══════════════════════════════════════════════╗");
-  Serial.println("║  Sistema de Polling ESP8266 - D1 Mini        ║");
-  Serial.println("║  Versão: 1.0                                  ║");
-  Serial.println("╚═══════════════════════════════════════════════╝");
+  Serial.println(F("\n\n"));
+  Serial.println(F("╔═══════════════════════════════════════════════╗"));
+  Serial.println(F("║  CertMind - Cliente de Stream ESP8266         ║"));
+  Serial.println(F("║  Versão: 2.1 (SSE)                            ║"));
+  Serial.println(F("╚═══════════════════════════════════════════════╝"));
 
-  // Inicializa LEDs
-  initializeLEDs();
+  leds.begin();
 
-  // Conecta ao WiFi
+  // Filtro do ArduinoJson: parseia só o necessário (ignora explanation, que
+  // pode ser longa), mantendo o documento pequeno.
+  g_filter["hasData"] = true;
+  g_filter["questionType"] = true;
+  g_filter["letters"] = true;
+  g_filter["flags"] = true;
+  g_filter["slots"] = true;
+  g_filter["slotCount"] = true;
+  g_filter["answerText"] = true;
+
+  // Conexão WiFi inicial (bloqueante apenas no boot); auto-reconnect cuida do resto.
   wifiManager.connect();
+  WiFi.setAutoReconnect(true);
 
-  // Verifica se conectou ao WiFi
-  if (!wifiManager.isConnected()) {
-    Serial.println("⚠ Sistema iniciado sem conexão WiFi!");
-    Serial.println("Tentando reconectar...\n");
-  }
+  sse.begin(handleAnswer);
 
-  Serial.println("✓ Setup concluído!\n");
-  Serial.println("Iniciando polling...\n");
+  Serial.println(F("✓ Setup concluído. Aguardando stream...\n"));
 }
 
 // ========================================
-// LOOP: Loop principal (não-bloqueante)
+// LOOP (não-bloqueante)
 // ========================================
 void loop() {
-  // Verifica se está conectado ao WiFi
-  if (!wifiManager.isConnected()) {
-    wifiManager.reconnect();
-    delay(WIFI_RECONNECT_DELAY_MS);
-    return;
+  unsigned long now = millis();
+
+  // 1) Avança a animação dos LEDs.
+  leds.update();
+
+  // 2) Gerencia o stream (conexão/parsing/reconexão).
+  sse.loop();
+
+  // 3) Reflete a saúde do stream nos LEDs (só afeta quando não há resposta ativa).
+  leds.setConnected(sse.isStreaming());
+
+  // 4) Log periódico do heap (detecção de vazamento).
+  if (now - g_lastHeapLog > STREAM_HEAP_LOG_MS) {
+    g_lastHeapLog = now;
+    Serial.print(F("[HEAP] livre="));
+    Serial.println(ESP.getFreeHeap());
   }
 
-  // Verifica se passou o intervalo de polling (sistema não-bloqueante)
-  unsigned long currentTime = millis();
-
-  if (currentTime - lastPollTime >= POLLING_INTERVAL_MS) {
-    lastPollTime = currentTime;
-    performPolling();
-  }
-
-  // Pequeno delay para não sobrecarregar o processador
-  delay(LOOP_DELAY_MS);
+  yield();  // alimenta o watchdog
 }

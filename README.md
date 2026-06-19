@@ -1,336 +1,173 @@
-# Sistema de Polling ESP8266 - D1 Mini
+# CertMind — Cliente de Stream ESP8266 (D1 Mini)
 
-Sistema de polling que conecta o D1 Mini (ESP8266) à API de certificação, fazendo requisições HTTPS a cada 1.5 segundos e controlando LEDs baseado nas respostas corretas recebidas.
+Firmware para D1 Mini (ESP8266) que consome o stream da API **CertMind** por **uma única conexão HTTP persistente (SSE — Server-Sent Events)** e aciona **5 LEDs (A–E)** conforme cada situação emitida pelo backend.
+
+O ESP8266 é **apenas consumidor**: abre um `GET` e fica escutando. Não faz `POST`, não envia imagem, não faz request/response.
+
+> **Versão 2.0** — substitui o transporte por polling HTTPS (v1.0) por stream SSE persistente em texto claro. Veja o changelog no topo de `src/main.cpp`.
 
 ## 🏗️ Arquitetura
 
-O projeto utiliza uma **arquitetura modular** com separação de responsabilidades:
+Projeto **PlatformIO** com arquitetura modular (separação de responsabilidades):
 
-- **Config.h**: Configurações centralizadas (WiFi, API, pins, timings)
-- **WiFiManager**: Módulo dedicado para gerenciamento de conexão WiFi
-- **front_cert_assistant.ino**: Lógica principal de polling e controle de LEDs
+| Módulo | Responsabilidade |
+|---|---|
+| `src/Config.h` | Configurações centralizadas: WiFi, endpoint do stream, pinos, timings dos padrões de LED e backoff de reconexão. |
+| `src/WiFiManager.{h,cpp}` | Conexão WiFi inicial (modo STA) e helpers de status. |
+| `src/SseClient.{h,cpp}` | Conexão GET persistente, validação de headers, parser SSE não-bloqueante e reconexão automática com backoff. |
+| `src/LedController.{h,cpp}` | Máquina de estados dos 5 LEDs (toda em `millis()`, sem `delay()`). |
+| `src/main.cpp` | Liga os módulos, faz o parse do JSON e decide o comportamento dos LEDs. |
+
+Fluxo: `SseClient` recebe um evento `answer` → `main.cpp` parseia o JSON → decide por `hasData` + `questionType` → `LedController` exibe o padrão correspondente.
 
 ## 📋 Requisitos
 
 ### Hardware
-- **1x D1 Mini (ESP8266)** ou clone Wemos
-- **5x LEDs** com as seguintes cores:
-  - 1x LED Verde (Resposta A)
-  - 1x LED Amarelo (Resposta B)
-  - 1x LED Vermelho (Resposta C)
-  - 1x LED Azul (Resposta D)
-  - 1x LED Branco (Resposta E)
-- **5x Resistores 220Ω** (um para cada LED)
-- **Protoboard e jumpers**
-- **Cabo USB Micro-B** para programação
+- **1× D1 Mini (ESP8266)** ou clone Wemos
+- **5× LEDs** (Verde, Amarelo, Vermelho, Azul, Branco) — posições/letras A–E
+- **5× Resistores 220 Ω** (um por LED)
+- Protoboard, jumpers e cabo USB Micro-B
 
 ### Software
-- **Arduino IDE** versão 1.8.x ou superior
-- **Biblioteca ArduinoJson** versão 6.21.0 ou superior
-- **ESP8266 Board Package** instalado
-
-## 🔧 Configuração do Arduino IDE
-
-### 1. Instalar ESP8266 Board Package
-
-1. Abra o Arduino IDE
-2. Vá em `File` → `Preferences`
-3. Em "Additional Board Manager URLs", adicione:
-   ```
-   http://arduino.esp8266.com/stable/package_esp8266com_index.json
-   ```
-4. Clique em `OK`
-5. Vá em `Tools` → `Board` → `Boards Manager`
-6. Procure por "esp8266"
-7. Instale o pacote **"esp8266 by ESP8266 Community"**
-
-### 2. Instalar Biblioteca ArduinoJson
-
-1. Vá em `Sketch` → `Include Library` → `Manage Libraries`
-2. Procure por "ArduinoJson"
-3. Instale **"ArduinoJson by Benoit Blanchon"** (versão 6.21.0 ou superior)
-
-### 3. Configurar a Board
-
-1. Vá em `Tools` → `Board` → `ESP8266 Boards`
-2. Selecione **"LOLIN(WEMOS) D1 R2 & mini"**
-3. Configure as opções:
-   - **Upload Speed**: 921600
-   - **CPU Frequency**: 80 MHz
-   - **Flash Size**: 4MB (FS:2MB OTA:~1019KB)
-   - **Port**: Selecione a porta COM correta do seu D1 Mini
+- **[PlatformIO](https://platformio.org/)** (CLI ou extensão do VS Code)
+- A plataforma `espressif8266` e a biblioteca **ArduinoJson 6.x** são instaladas automaticamente a partir do `platformio.ini`.
 
 ## 🔌 Esquema de Conexão
 
-### Pinagem dos LEDs
-
-| LED | Cor | Pino D1 Mini | GPIO | Resistor |
-|-----|-----|--------------|------|----------|
-| A | Verde | D3 | GPIO0 | 220Ω |
-| B | Amarelo | D2 | GPIO4 | 220Ω |
-| C | Vermelho | D5 | GPIO14 | 220Ω |
-| D | Azul | D1 | GPIO5 | 220Ω |
-| E | Branco | D7 | GPIO13 | 220Ω |
-
-### Diagrama de Conexão
+| LED | Cor | Pino D1 Mini | GPIO | Posição/Letra | Resistor |
+|-----|-----|--------------|------|---------------|----------|
+| A | Verde | D3 | GPIO0 | 1 | 220 Ω |
+| B | Amarelo | D2 | GPIO4 | 2 | 220 Ω |
+| C | Vermelho | D5 | GPIO14 | 3 | 220 Ω |
+| D | Azul | D1 | GPIO5 | 4 | 220 Ω |
+| E | Branco | D7 | GPIO13 | 5 | 220 Ω |
 
 ```
 D1 Mini          Resistor      LED
---------        --------      -----
-D3 (GPIO0)  --> 220Ω --> (+) LED Verde (-) --> GND
-D2 (GPIO4)  --> 220Ω --> (+) LED Amarelo (-) --> GND
-D5 (GPIO14) --> 220Ω --> (+) LED Vermelho (-) --> GND
-D1 (GPIO5)  --> 220Ω --> (+) LED Azul (-) --> GND
-D7 (GPIO13) --> 220Ω --> (+) LED Branco (-) --> GND
+--------         --------      -----
+D3 (GPIO0)  -->  220Ω -->  (+) LED Verde   (-) --> GND
+D2 (GPIO4)  -->  220Ω -->  (+) LED Amarelo (-) --> GND
+D5 (GPIO14) -->  220Ω -->  (+) LED Vermelho(-) --> GND
+D1 (GPIO5)  -->  220Ω -->  (+) LED Azul    (-) --> GND
+D7 (GPIO13) -->  220Ω -->  (+) LED Branco  (-) --> GND
 ```
 
-**Observação**: Conecte o terminal negativo (-) de cada LED ao GND do D1 Mini.
+Conecte o terminal negativo (−) de cada LED ao GND do D1 Mini.
 
-## ⚙️ Configuração do Código
+## ⚙️ Configuração
 
-### Editar Config.h
+Toda a parametrização fica em **`src/Config.h`**.
 
-Todas as configurações estão centralizadas no arquivo **`Config.h`**. Abra este arquivo e edite as seguintes seções:
-
-#### 1. Credenciais WiFi
+### Endpoint do stream
 
 ```cpp
-#define WIFI_SSID "SEU_WIFI_SSID"
-#define WIFI_PASSWORD "SUA_SENHA_WIFI"
+#define STREAM_HOST "192.168.15.38"
+#define STREAM_PORT 8090
+#define STREAM_PATH "/api/exam/stream"
 ```
 
-**Exemplo:**
-```cpp
-#define WIFI_SSID "MinhaRedeWiFi"
-#define WIFI_PASSWORD "minhaSenha123"
-```
+> **HTTP puro, sem TLS/HTTPS.** Em dev local, basta trocar host/porta (ex.: `192.168.15.38:5267`) — a lógica é a mesma.
 
-#### 2. Endpoint da API
+### Credenciais WiFi
 
 ```cpp
-#define API_URL "https://certapi.proera.com.br/api/Esp8266/poll"
+#define WIFI_SSID "..."
+#define WIFI_PASSWORD "..."
 ```
 
-**Não é necessário alterar** este valor, a menos que o endpoint da API mude.
+> O ESP8266 só opera em redes **2,4 GHz**.
 
-#### 3. Outras Configurações Disponíveis
+### Outros ajustes disponíveis
+- **Pinos dos LEDs:** `LED_PIN_A` … `LED_PIN_E`
+- **Timeout / reconexão:** `STREAM_TIMEOUT_MS`, `STREAM_BACKOFF_TABLE`
+- **Timings dos padrões de LED:** `LED_CONN_BLINK_MS`, `LED_IDLE_*`, `LED_CHASE_*`, `LED_ERROR_*`, `LED_SEQ_*`
 
-- ***Configure as credenciais WiFi** em `Config.h`
-2. Conecte o D1 Mini ao computador via cabo USB
-3. Abra o arquivo `front_cert_assistant.ino` no Arduino IDE
-4. Verifique se a board e porta estão corretas em `Tools`
-5. Clique em `Upload` (ou pressione `Ctrl+U`)
-6. Aguarde a compilação e upload do código
-7. Após o upload, abra o Serial Monitor (`Tools` → `Serial Monitor` ou `Ctrl+Shift+M`)
-8# 📤 Upload do Código
+## 📤 Build, Upload e Monitor
 
-1. Conecte o D1 Mini ao computador via cabo USB
-2. Abra o arquivo `front_cert_assistant.ino` no Arduino IDE
-3. Verifique se a board e porta estão corretas em `Tools`
-4. Clique em `Upload` (ou pressione `Ctrl+U`)
-5. Aguarde a compilação e upload do código
-6. Após o upload, abra o Serial Monitor (`Tools` → `Serial Monitor` ou `Ctrl+Shift+M`)
-7. Configure o baud rate para **115200**
+Toolchain é **PlatformIO** (ambiente único `[env:d1_mini]`):
 
-## 📊 Funcionamento1.5 segundos)**
-   - Faz requisição HTTPS GET ao endpoint da API
-   - Recebe resposta JSON
-   - Extrai campos `isMultipleChoice` e `correctAnswers`
-   - Atualiza LEDs baseado nas respostas corretas
-   - Exibe dados na Serial
-   - Tempo de exibição varia: 5s (única escolha) ou 8s (múltipla escolha)ao WiFi
-   - Todos os LEDs são inicializados e desligados
-   - Sistema entra em modo de polling
-
-2. **Polling (a cada 2 segundos)**
-   - Faz requisição GET ao endpoint da API
-   - Recebe resposta JSON
-   - Extrai campos `isMultipleChoice` e `correctAnswers`
-   - Atualiza LEDs baseado nas respostas corretas
-   - Exibe dados na Serial
-
-3. **Controle de LEDs**
-   - LEDs acendem de acordo com as respostas corretas
-   - Se `correctAnswers = ["A", "C"]`, apenas LEDs A e C acendem
-   - Demais LEDs permanecem apagados
-
-### Exemplo de Saída Serial
-
-```
-╔═══════════════════════════════════════════════╗
-║  Sistema de Polling ESP8266 - D1 Mini        ║
-║  Versão: 1.0                                  ║
-╚═══════════════════════════════════════════════╝
-✓ LEDs inicializados
-
-=================================
-Conectando ao WiFi: MinhaRedeWiFi
-=================================
-...
-✓ WiFi conectado com sucesso!
-Endereço IP: 192.168.1.100
-=================================
-
-✓ Setup concluído!
-
-Iniciando polling...
-
-╔════════════════════════════════════════╗
-║ Poll #1 - Requisição iniciada...
-╚════════════════════════════════════════╝
-Status HTTP: 200
-✓ Response recebido com sucesso!
-
---- Dados Extraídos ---
-isMultipleChoice: false
-correctAnswers: [A]
------------------------
-
-LEDs atualizados:
-  ✓ LED A (Verde): LIGADO
-    LED B (Amarelo): DESLIGADO
-    LED C (Vermelho): DESLIGADO
-    LED D (Azul): DESLIGADO
-    LED E (Branco): DESLI
-
-⏳ Aguardando próximo poll (2 segundos)...
+```bash
+pio run                 # Compila o firmware
+pio run --target upload # Compila e grava no D1 Mini (USB)
+pio device monitor      # Monitor serial (115200 baud)
+pio run --target clean  # Limpa artefatos de build
 ```
 
-## 🔍 Estrutura do JSON
+## 📡 Como o stream funciona
 
-### Resposta da API
+- **Método:** `GET {STREAM_HOST}:{STREAM_PORT}{STREAM_PATH}` — `Content-Type: text/event-stream`.
+- A conexão é **aberta uma vez e fica viva indefinidamente**; o servidor empurra eventos conforme ocorrem.
+- Linhas iniciadas por `:` são comentários de prova de vida (`: connected` na abertura, `: ping` a cada 15 s).
+- Um evento `answer` traz um JSON (`SolverOutput`) com os campos abaixo. O firmware lê apenas o necessário (ignora `explanation` no parse, via filtro do ArduinoJson):
 
-```json
-{
-  "hasData": true,
-  "itemId": "c61b5e4b-67a0-4548-9500-7e90ecd619b8",
-  "data": {
-    "isMultipleChoice": false,
-    "correctAnswers": ["A"],
-    "explanation": "Explicação da resposta...",
-    "analyzedAt": "2026-01-09T20:18:28.6459736Z"
-  },
-  "message": "Data retrieved successfully"
-}
-```
+| Campo | Tipo | Significado |
+|---|---|---|
+| `hasData` | bool | `true` se a questão foi lida; `false` se ilegível ou modo Test |
+| `questionType` | string | `single`, `multiple`, `yesno`, `dropdown`, `ordering`, `matching` ou `test` |
+| `letters` | string[] | Letras A–E (`single`/`multiple`) |
+| `flags` | bool[] | Sim/Não por afirmação (`yesno`) |
+| `slots` | int[] | Posições 1–5 por slot (`dropdown`/`ordering`/`matching`) |
+| `slotCount` | int | Nº de afirmações/lacunas/itens |
+| `answerText` | string | Resposta legível |
+| `explanation` | string | Justificativa (não usada pelo firmware) |
+| `elapsedMilliseconds` | long | Tempo de processamento no servidor |
 
-### Dados Extraídos
+## 💡 Comportamento dos LEDs
 
-O sistema extrai apenas dois campos:
+Não há LED de status dedicado — a saúde da conexão e as respostas compartilham os 5 LEDs com padrões distintos. **Resposta tem prioridade sobre conexão**, e um `answer` novo sempre interrompe a exibição atual.
 
-1. **`data.isMultipleChoice`** (boolean)
-   - `true`: Questão de múltipla escolha
-   - `false`: Questão de escolha única
+### Estados de conexão (somente quando não há resposta ativa)
 
-2. **`data.correctAnswers`** (array de strings)
-   - Contém as letras das respostas corretas
-   - Exemplo: `["A"]`, `["A", "C", "E"]`
+| Situação | Padrão |
+|---|---|
+| Conectando / sem WiFi / reconectando | LEDs das pontas (**A e E**) piscam juntos rápido (~150 ms) |
+| Conectado, ocioso | Heartbeat discreto: **LED A** dá 1 pulso curto (~80 ms) a cada ~2 s |
+| Segurando resposta `single`/`multiple` | Mantém a(s) posição(ões) acesa(s), sem heartbeat |
 
-## 🛠️ Solução de Problemas
+### Eventos `answer`
 
-### WiFi não conecta
+| Situação | Padrão |
+|---|---|
+| `questionType == "test"` | Varredura (chase) A→B→C→D→E, 2×, e volta ao ocioso |
+| `hasData == false` (ilegível) | 5 LEDs piscam juntos 3× (~250 ms on/off) e apagam |
+| Erro ao parsear o JSON do evento | Mesmo padrão de erro (5 LEDs piscando 3×) — em vez de falhar em silêncio |
+| `single` | 1 LED aceso (a letra), **mantido** até o próximo `answer` |
+| `multiple` | LEDs das letras acesos simultaneamente, **mantidos** |
+| `yesno` | **Sequencial** por afirmação: Sim = aceso fixo, Não = piscando rápido (~1,5 s cada, gap ~0,4 s); 2 passadas |
+| `dropdown` / `ordering` / `matching` | **Sequencial** acendendo a posição (1–5) de cada slot, na ordem; 2 passadas |
 
-**Problema**: LEDs não acendem e Serial mostra "✗ Falha ao conectar ao WiFi!"
+Sequências com mais de 5 itens são truncadas para 5 (com aviso no Serial). Slot fora de 1–5 → pisca os 5 juntos 1× naquele passo e segue.
 
-**Soluções**:
-1. Verifique se o SSID e senha estão corretos
-2. Certifique-se de que a rede é 2.4GHz (ESP8266 não suporta 5GHz)
-3. Aproxime o D1 Mini do roteador
-4. Reinicie o D1 Mini pressionando o botão RESET
+## 🔁 Reconexão automática
 
-### Erro HTTP na requisição
+Reconecta se (a) o socket cair, (b) o WiFi cair, ou (c) passar `STREAM_TIMEOUT_MS` (~40 s) sem nenhuma linha. Backoff progressivo **1 → 2 → 5 → 10 → 20 → 30 s (máx)**, zerado quando o stream reabre. Durante a reconexão, os LEDs mostram o padrão "pontas A+E piscando".
 
-**Problema**: Serial mostra "✗ Erro HTTP: XXX"
+## 🧪 Testes / critérios de aceite
 
-**Soluções**:
-1. Verifique se o endpoint da API está acessível
-2. Teste o endpoint manualmente com curl ou Postman
-3. Verifique se há firewall bloqueando a conexão
-4. Certifique-se de que a data/hora do sistema está correta
+> Os `POST` abaixo são disparados **de um PC**, apenas para gerar eventos no stream — nada disso roda no ESP.
 
-### LEDs não acendem
+1. **Conexão viva:** Serial mostra `[SSE] Stream aberto`; `: ping` a cada 15 s sem reconectar; LED A em heartbeat quando ocioso.
+2. **Evento de teste (sem custo de IA):** `POST {BASE}/api/exam/solve` com `Test=true` (multipart) → chase A→E em < ~1 s.
+3. **single / multiple:** confirme 1 LED / vários LEDs acesos e mantidos.
+4. **yesno:** confirme a sequência Sim=fixo / Não=piscando, na ordem das afirmações.
+5. **dropdown / ordering / matching:** confirme a sequência acendendo a posição de cada slot.
+6. **Ilegível:** force `hasData=false` → 5 LEDs piscando juntos 3×.
+7. **Reconexão:** derrube WiFi/servidor → padrão A+E piscando + log de backoff; ao voltar, reconecta e o backoff zera.
+8. **Heap:** acompanhe `[HEAP] livre=` (a cada 10 s) — deve permanecer estável após muitos eventos/reconexões.
 
-**Problema**: WiFi conecta e requisição funciona, mas LEDs não acendem
+## 🛠️ Solução de problemas
 
-**Soluções**:
-1. Verifique as conexões dos LEDs
-2. Teste cada LED individualmente com um código simples
-3. Verifique se os resistores estão corretos (220Ω)
-4. Certifique-se de que a polaridade dos LEDs está correta (+/-)
-5. Meça a tensão nos pinos com multímetro
+- **WiFi não conecta:** confira SSID/senha e use rede 2,4 GHz (o ESP8266 não suporta 5 GHz).
+- **`[SSE] status HTTP != 200` ou reconexão constante:** verifique se `STREAM_HOST`/`STREAM_PORT`/`STREAM_PATH` apontam para o endpoint correto e se o servidor está acessível na rede.
+- **Erro de build (`ESP8266WiFi.h`/`ArduinoJson.h`):** rode `pio run` — o PlatformIO baixa a plataforma e as dependências automaticamente.
 
-### Biblioteca não encontrada
+## 📚 Recursos
 
-**Problema**: Erro de compilação "ESP8266WiFi.h: No such file or directory"
-
-**Soluções**:
-1. Instale o ESP8266 Board Package conforme instruções acima
-2. Reinicie o Arduino IDE
-3. Verifique se a board correta está selecionada em `Tools` → `Board`
-
-### ArduinoJson não encontrado
-
-**Problema**: Erro de compilação "ArduinoJson.h: No such file or directory"
-
-**Soluções**:
-1. Instale a biblioteca ArduinoJson via Library Manager
-2. Certifique-se de instalar a versão 6.x (não a 5.x)
-3. Reinicie o Arduino IDE
-
-Todas as personalizações devem ser feitas no arquivo **`Config.h`**.
-
-### Alterar Intervalo de Polling
-
-```cpp
-#define POLLING_INTERVAL_MS 1500  // Valor em milissegundos
-```
-
-**Exemplos**:
-- 3 segundos: `3000`
-- 5 segundos: `5000`
-- 10 segundos: `10000`
-
-### Alterar Tempos de Exibição
-
-```cpp
-#define DISPLAY_DURATION_SINGLE_MS 5000   // Questão única escolha
-#define DISPLAY_DURATION_MULTIPLE_MS 8000 // Questão múltipla escolha
-```
-
-### Alterar Pinos dos LEDs
-
-```cpp
-#define LED_PIN_A D3  // Altere D3 para outro pino (ex: D4)
-#define LED_PIN_B D2  // Altere D2 para outro pino
-// ... e assim por diante
-```
-
-**Pinos disponíveis no D1 Mini**: D0, D1, D2, D3, D4, D5, D6, D7, D8
-
-### Alterar Tentativas de Conexão WiFi
-
-```cpp
-#define WIFI_MAX_RETRY_ATTEMPTS 30  // Número de tentativas
-#define WIFI_RETRY_DELAY_MS 500     // Delay entre tentativas
-```
-
-**Pinos disponíveis no D1 Mini**: D0, D1, D2, D3, D4, D5, D6, D7, D8
-
-## 📚 Recursos Adicionais
-
-- [Documentação ESP8266](https://arduino-esp8266.readthedocs.io/)
+- [Documentação ESP8266 Arduino core](https://arduino-esp8266.readthedocs.io/)
 - [Pinout D1 Mini](https://randomnerdtutorials.com/esp8266-pinout-reference-gpios/)
-- [ArduinoJson Documentation](https://arduinojson.org/)
-- [Plano Detalhado do Projeto](plans/plano_detalhado.md)
-
-## 📄 Licença
-
-Este projeto foi desenvolvido para fins educacionais e de certificação.
+- [ArduinoJson](https://arduinojson.org/)
+- [Especificação SSE (WHATWG)](https://html.spec.whatwg.org/multipage/server-sent-events.html)
 
 ## 👤 Autor
 
-Proera - 2026
-
----
-
-**Desenvolvido com ❤️ para o D1 Mini**
+Proera — 2026
