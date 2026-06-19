@@ -1,7 +1,7 @@
 /*
  * Sistema CertMind - Cliente de Stream ESP8266 (D1 Mini)
  *
- * Versão: 2.1
+ * Versão: 2.2
  *
  * Descrição: Consome o stream SSE da API CertMind por UMA conexão HTTP
  * persistente (GET, texto claro, sem TLS) e aciona 5 LEDs (A-E) conforme
@@ -14,6 +14,12 @@
  * Hardware: D1 Mini (ESP8266) + 5 LEDs (posições/letras A-E => 1-5).
  *
  * Changelog:
+ *   2.2 - Janela de boot: ao ligar, os LEDs sinalizam conexão/ocioso por
+ *         LED_BOOT_BLINK_MS (5 min) e então ficam APAGADOS até a 1ª resposta do
+ *         backend. O stream segue ativo (ping + logs na serial) durante o
+ *         blackout — só a saída dos LEDs é suprimida. A 1ª resposta (qualquer
+ *         evento answer: single/multiple/yesno/sequência/test/erro) encerra o
+ *         blackout em definitivo e o fluxo normal reassume.
  *   2.1 - Correção: eventos com answerText longo (ex.: matching/ordering com
  *         setas/acentos UTF-8) não acionavam os LEDs. O parse do JSON recebia o
  *         buffer como const char*, fazendo o ArduinoJson COPIAR as strings para
@@ -182,7 +188,7 @@ void setup() {
   Serial.println(F("\n\n"));
   Serial.println(F("╔═══════════════════════════════════════════════╗"));
   Serial.println(F("║  CertMind - Cliente de Stream ESP8266         ║"));
-  Serial.println(F("║  Versão: 2.1 (SSE)                            ║"));
+  Serial.println(F("║  Versão: 2.2 (SSE)                            ║"));
   Serial.println(F("╚═══════════════════════════════════════════════╝"));
 
   leds.begin();

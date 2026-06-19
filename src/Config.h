@@ -63,6 +63,13 @@
 #define LED_IDLE_PERIOD_MS 2000  // 1 pulso a cada ~2s
 #define LED_IDLE_PULSE_MS 80     // duração do pulso
 
+// A) Janela de boot: após ligar, os LEDs sinalizam conexão/ocioso normalmente
+//    por este período; em seguida ficam APAGADOS até a 1ª resposta do backend.
+//    O stream segue ativo (ping + logs na serial) durante o blackout — só a
+//    saída dos LEDs é suprimida. A 1ª resposta encerra o blackout em definitivo
+//    e o fluxo normal (conexão/ocioso/resposta) reassume.
+#define LED_BOOT_BLINK_MS 300000UL  // 5 min sinalizando no boot, depois apaga
+
 // B) Evento de teste (questionType="test"): chase A->E
 #define LED_CHASE_STEP_MS 120    // tempo de cada LED no chase
 #define LED_CHASE_PASSES 2       // repete a varredura 2x

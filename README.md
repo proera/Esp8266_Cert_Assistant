@@ -4,7 +4,7 @@ Firmware para D1 Mini (ESP8266) que consome o stream da API **CertMind** por **u
 
 O ESP8266 é **apenas consumidor**: abre um `GET` e fica escutando. Não faz `POST`, não envia imagem, não faz request/response.
 
-> **Versão 2.0** — substitui o transporte por polling HTTPS (v1.0) por stream SSE persistente em texto claro. Veja o changelog no topo de `src/main.cpp`.
+> **Versão 2.2** — transporte por stream SSE persistente em texto claro (substituiu o polling HTTPS da v1.0) e janela de silêncio no boot (LEDs apagados após 5 min, até a 1ª resposta). Veja o changelog no topo de `src/main.cpp`.
 
 ## 🏗️ Arquitetura
 
@@ -80,7 +80,7 @@ Toda a parametrização fica em **`src/Config.h`**.
 ### Outros ajustes disponíveis
 - **Pinos dos LEDs:** `LED_PIN_A` … `LED_PIN_E`
 - **Timeout / reconexão:** `STREAM_TIMEOUT_MS`, `STREAM_BACKOFF_TABLE`
-- **Timings dos padrões de LED:** `LED_CONN_BLINK_MS`, `LED_IDLE_*`, `LED_CHASE_*`, `LED_ERROR_*`, `LED_SEQ_*`
+- **Timings dos padrões de LED:** `LED_CONN_BLINK_MS`, `LED_IDLE_*`, `LED_BOOT_BLINK_MS`, `LED_CHASE_*`, `LED_ERROR_*`, `LED_SEQ_*`
 
 ## 📤 Build, Upload e Monitor
 
@@ -115,6 +115,10 @@ pio run --target clean  # Limpa artefatos de build
 ## 💡 Comportamento dos LEDs
 
 Não há LED de status dedicado — a saúde da conexão e as respostas compartilham os 5 LEDs com padrões distintos. **Resposta tem prioridade sobre conexão**, e um `answer` novo sempre interrompe a exibição atual.
+
+### Janela de boot (silêncio até a 1ª resposta)
+
+Ao ligar, os LEDs sinalizam conexão/ocioso normalmente por **`LED_BOOT_BLINK_MS` (5 min)**; depois ficam **apagados** até a **1ª resposta** do backend. Durante esse blackout o stream continua ativo (ping a cada 15 s e logs na serial) — **só a saída dos LEDs é suprimida**. Qualquer evento `answer` (incluindo `test` ou erro) encerra o blackout **em definitivo**: a partir daí vale o fluxo normal abaixo, e o blackout não rearma. Se a 1ª resposta chegar antes dos 5 min, o blackout nunca chega a ocorrer.
 
 ### Estados de conexão (somente quando não há resposta ativa)
 

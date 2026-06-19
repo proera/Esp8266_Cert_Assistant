@@ -23,6 +23,9 @@ void LedController::begin() {
 
   _answerActive = false;
   _connected = false;
+  _bootMillis = millis();
+  _firstAnswerReceived = false;
+  _blackoutAnnounced = false;
 }
 
 // ========================================
@@ -55,6 +58,17 @@ void LedController::update() {
   }
 
   // Sem resposta ativa: padrão de conexão/ocioso.
+  // Janela de boot: por LED_BOOT_BLINK_MS os LEDs sinalizam normalmente; depois
+  // ficam apagados até a 1ª resposta. O stream/serial seguem ativos no blackout.
+  if (!_firstAnswerReceived && (now - _bootMillis) >= LED_BOOT_BLINK_MS) {
+    if (!_blackoutAnnounced) {
+      Serial.println(F("[LED] Janela de boot encerrada sem resposta -> LEDs apagados ate a 1a resposta"));
+      _blackoutAnnounced = true;
+    }
+    allOff();
+    return;
+  }
+
   if (_connected) {
     renderIdle(now);
   } else {
@@ -89,6 +103,7 @@ void LedController::renderIdle(unsigned long now) {
 // ========================================
 void LedController::startHold() {
   _answerActive = true;
+  _firstAnswerReceived = true;  // encerra o blackout pós-boot, se ativo
   _mode = MODE_HOLD;
   _animStart = millis();
   allOff();  // começa pelo blank de chegada; renderHold conduz a partir daqui
@@ -122,6 +137,7 @@ void LedController::renderHold(unsigned long now) {
 // ========================================
 void LedController::showTestChase() {
   _answerActive = true;
+  _firstAnswerReceived = true;  // encerra o blackout pós-boot, se ativo
   _mode = MODE_CHASE;
   _animStart = millis();
   allOff();
@@ -145,6 +161,7 @@ void LedController::renderChase(unsigned long now) {
 // ========================================
 void LedController::showError() {
   _answerActive = true;
+  _firstAnswerReceived = true;  // encerra o blackout pós-boot, se ativo
   _mode = MODE_ERROR;
   _animStart = millis();
   allOff();
@@ -198,6 +215,7 @@ void LedController::showMultiple(const uint8_t* pos, uint8_t n) {
 // ========================================
 void LedController::startSeq() {
   _answerActive = true;
+  _firstAnswerReceived = true;  // encerra o blackout pós-boot, se ativo
   _mode = MODE_SEQ;
   _animStart = millis();
   allOff();

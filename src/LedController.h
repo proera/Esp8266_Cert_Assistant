@@ -16,6 +16,11 @@
  *      visível a chegada mesmo de respostas iguais consecutivas (ex.: A depois A).
  *   5. Conexão caindo/reconectando vence o estado ocioso.
  *
+ * Janela de boot: após begin(), por LED_BOOT_BLINK_MS os LEDs sinalizam
+ * conexão/ocioso normalmente; em seguida ficam apagados até a 1ª resposta do
+ * backend (o stream/serial seguem ativos — só a saída dos LEDs é suprimida).
+ * A 1ª resposta encerra o blackout em definitivo e o fluxo normal reassume.
+ *
  * Todo o tempo é medido com millis() — nenhuma chamada a delay().
  */
 
@@ -55,6 +60,11 @@ class LedController {
     bool _connected = false;      // saúde do stream (quando !_answerActive)
     Mode _mode = MODE_HOLD;
     unsigned long _animStart = 0; // início da animação corrente
+
+    // Janela de boot: blackout dos LEDs após LED_BOOT_BLINK_MS, até a 1ª resposta.
+    unsigned long _bootMillis = 0;      // instante do begin() (início da janela)
+    bool _firstAnswerReceived = false;  // 1ª resposta encerra o blackout pós-boot
+    bool _blackoutAnnounced = false;    // log one-shot ao iniciar o blackout
 
     uint8_t _holdMask = 0;        // LEDs fixos (single/multiple + "Sim" do yesno)
     uint8_t _holdBlinkMask = 0;   // LEDs que piscam no HOLD ("Não" do yesno)
