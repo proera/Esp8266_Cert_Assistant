@@ -46,7 +46,7 @@ void LedController::update() {
 
   if (_answerActive) {
     switch (_mode) {
-      case MODE_HOLD:                       break;  // mantém o que está aceso
+      case MODE_HOLD:  renderHold(now);     break;
       case MODE_CHASE: renderChase(now);    break;
       case MODE_ERROR: renderError(now);    break;
       case MODE_SEQ:   renderSeq(now);      break;
@@ -79,6 +79,42 @@ void LedController::renderIdle(unsigned long now) {
   // Heartbeat discreto: pulso curto no LED A a cada LED_IDLE_PERIOD_MS.
   unsigned long phase = now % LED_IDLE_PERIOD_MS;
   writeMask(phase < LED_IDLE_PULSE_MS ? BIT(0) : 0);
+}
+
+// ========================================
+// B) HOLD: resposta retida por LED_HOLD_TTL_MS, depois volta ao heartbeat.
+//    Começa com um blank de LED_HOLD_INTAKE_MS (transição visível p/ respostas
+//    iguais consecutivas). Conteúdo: _holdMask fixo + _holdBlinkMask piscando.
+//    single/multiple => _holdBlinkMask == 0 (estático). yesno => "Não" pisca.
+// ========================================
+void LedController::startHold() {
+  _answerActive = true;
+  _mode = MODE_HOLD;
+  _animStart = millis();
+  allOff();  // começa pelo blank de chegada; renderHold conduz a partir daqui
+}
+
+void LedController::renderHold(unsigned long now) {
+  unsigned long elapsed = now - _animStart;
+
+  // Expirou: a resposta deixa de ser exibida e a saúde da conexão reassume.
+  if (elapsed >= LED_HOLD_TTL_MS) {
+    allOff();
+    _answerActive = false;
+    return;
+  }
+  // Blank de chegada: tudo apagado no início de toda resposta.
+  if (elapsed < LED_HOLD_INTAKE_MS) {
+    allOff();
+    return;
+  }
+  // Exibição: letras/"Sim" fixos; "Não" do yesno piscando.
+  if (_holdBlinkMask == 0) {
+    writeMask(_holdMask);
+    return;
+  }
+  bool on = ((now / LED_YESNO_BLINK_MS) % 2) == 0;
+  writeMask(_holdMask | (on ? _holdBlinkMask : 0));
 }
 
 // ========================================
@@ -137,9 +173,8 @@ void LedController::showSingle(uint8_t pos) {
     return;
   }
   _holdMask = BIT(pos - 1);
-  _answerActive = true;
-  _mode = MODE_HOLD;
-  writeMask(_holdMask);
+  _holdBlinkMask = 0;
+  startHold();
 }
 
 void LedController::showMultiple(const uint8_t* pos, uint8_t n) {
@@ -154,9 +189,8 @@ void LedController::showMultiple(const uint8_t* pos, uint8_t n) {
     return;
   }
   _holdMask = mask;
-  _answerActive = true;
-  _mode = MODE_HOLD;
-  writeMask(_holdMask);
+  _holdBlinkMask = 0;
+  startHold();
 }
 
 // ========================================
@@ -176,13 +210,18 @@ void LedController::showYesNo(const bool* flags, uint8_t n) {
   }
   if (n > LED_COUNT) n = LED_COUNT;
 
-  _stepCount = n;
+  // Afirmação i -> LED i, todas simultâneas e retidas até o próximo answer.
+  // Sim = fixo (_holdMask); Não = piscando (_holdBlinkMask).
+  uint8_t solid = 0;
+  uint8_t blink = 0;
   for (uint8_t i = 0; i < n; i++) {
-    // Afirmação i -> LED i. Sim = fixo; Não = piscando.
-    _stepType[i] = flags[i] ? STEP_SOLID : STEP_BLINK;
-    _stepLed[i] = i;
+    if (flags[i]) solid |= BIT(i);
+    else          blink |= BIT(i);
   }
-  startSeq();
+
+  _holdMask = solid;
+  _holdBlinkMask = blink;
+  startHold();  // blank de chegada + exibição por TTL; renderHold conduz a animação
 }
 
 void LedController::showSlots(const uint8_t* slots, uint8_t n) {

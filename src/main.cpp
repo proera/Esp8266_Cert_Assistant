@@ -127,7 +127,7 @@ void handleAnswer(char* payload) {
     return;
   }
 
-  // 4a) yesno => flags (sequencial).
+  // 4a) yesno => flags (retido c/ TTL: Sim = fixo, Não = piscando, simultâneos).
   if (strcmp(qt, "yesno") == 0) {
     int slotCount = g_doc["slotCount"] | 0;
     JsonArray flagsArr = g_doc["flags"];

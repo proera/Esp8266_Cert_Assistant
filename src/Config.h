@@ -72,12 +72,20 @@
 #define LED_ERROR_OFF_MS 250
 #define LED_ERROR_CYCLES 3       // pisca 3x
 
-// C) Sequência (yesno / dropdown / ordering / matching)
+// C) Sequência (dropdown / ordering / matching)
 #define LED_SEQ_STEP_MS 1500     // duração de cada passo
 #define LED_SEQ_GAP_MS 400       // intervalo (tudo apagado) entre passos
 #define LED_SEQ_BLINK_MS 200     // período do piscar rápido (resposta "Não")
 #define LED_SEQ_PASSES 2         // toca a sequência + 1 repetição
 #define LED_SEQ_ERRBLINK_MS 250  // blink dos 5 juntos p/ slot inválido
+
+// B) HOLD (single / multiple / yesno): resposta retida com TTL.
+// Toda exibição começa com um blank curto (transição visível mesmo p/ respostas
+// iguais consecutivas, ex.: A depois A), fica exibida por LED_HOLD_TTL_MS e
+// então volta ao heartbeat. No yesno: Sim = fixo, Não = piscando (simultâneos).
+#define LED_HOLD_TTL_MS 12000UL  // tempo que a resposta fica exibida
+#define LED_HOLD_INTAKE_MS 250   // blank de chegada (tudo apagado) no início
+#define LED_YESNO_BLINK_MS 350   // período do piscar do "Não" no yesno
 
 // ========================================
 // CONFIGURAÇÕES SERIAL
