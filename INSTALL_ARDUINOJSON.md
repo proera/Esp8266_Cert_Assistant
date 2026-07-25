@@ -1,100 +1,85 @@
-# Como Instalar a Biblioteca ArduinoJson
+# Dependência: ArduinoJson 6.x
 
-O erro indica que a biblioteca **ArduinoJson** não está instalada no seu Arduino IDE. Siga os passos abaixo para resolver:
+Este projeto usa **PlatformIO**, e a dependência já está declarada no `platformio.ini`:
 
-## 🔧 Solução: Instalar ArduinoJson via Library Manager
-
-### Passo a Passo
-
-1. **Abra o Arduino IDE**
-
-2. **Acesse o Library Manager**
-   - Clique em `Sketch` → `Include Library` → `Manage Libraries...`
-   - Ou use o atalho: `Ctrl+Shift+I`
-
-3. **Procure por ArduinoJson**
-   - Na barra de busca, digite: `ArduinoJson`
-   - Aguarde carregar os resultados
-
-4. **Instale a biblioteca**
-   - Encontre **"ArduinoJson by Benoit Blanchon"**
-   - **IMPORTANTE**: Instale a versão **6.x** (exemplo: 6.21.5, 6.22.0)
-   - **NÃO instale** a versão 5.x ou 7.x
-   - Clique no botão `Install`
-
-5. **Aguarde a instalação**
-   - O Arduino IDE baixará e instalará a biblioteca
-   - Você verá "INSTALLED" quando concluir
-
-6. **Feche e reabra o Library Manager**
-
-7. **Compile novamente o código**
-   - Clique em `Verify` (✓) ou pressione `Ctrl+R`
-   - O erro deve desaparecer
-
-## ✅ Verificação
-
-Após instalar, você pode verificar se a biblioteca foi instalada corretamente:
-
-1. Vá em `Sketch` → `Include Library`
-2. Role a lista e procure por **ArduinoJson**
-3. Se aparecer na lista, a instalação foi bem-sucedida
-
-## 📹 Demonstração Visual
-
-```
-Arduino IDE
-└── Sketch
-    └── Include Library
-        └── Manage Libraries...
-            └── [Barra de busca: "ArduinoJson"]
-                └── ArduinoJson by Benoit Blanchon
-                    └── Versão: 6.21.5 (ou superior 6.x)
-                        └── [Botão: Install]
+```ini
+lib_deps =
+	bblanchon/ArduinoJson@^6.21.5
 ```
 
-## 🛠️ Solução Alternativa (Manual)
-
-Se o Library Manager não funcionar, você pode instalar manualmente:
-
-1. **Baixe a biblioteca**
-   - Acesse: https://github.com/bblanchon/ArduinoJson/releases
-   - Baixe a versão mais recente 6.x (arquivo `.zip`)
-
-2. **Instale via ZIP**
-   - No Arduino IDE, vá em `Sketch` → `Include Library` → `Add .ZIP Library...`
-   - Selecione o arquivo `.zip` baixado
-   - Aguarde a instalação
-
-3. **Reinicie o Arduino IDE**
-
-## 📋 Versões Recomendadas
-
-| Versão | Status | Compatibilidade |
-|--------|--------|-----------------|
-| 6.21.x | ✅ Recomendada | ESP8266 |
-| 6.22.x | ✅ Recomendada | ESP8266 |
-| 7.x | ⚠️ Beta | Pode ter incompatibilidades |
-| 5.x | ❌ Antiga | API diferente |
-
-## ❓ Ainda com Problemas?
-
-Se após instalar a biblioteca o erro persistir:
-
-1. **Reinicie o Arduino IDE completamente**
-2. **Verifique se a board ESP8266 está selecionada**
-   - `Tools` → `Board` → `LOLIN(WEMOS) D1 R2 & mini`
-3. **Limpe os arquivos temporários**
-   - Feche o Arduino IDE
-   - Delete a pasta de cache (Windows): `C:\Users\[seu_usuario]\AppData\Local\Temp\arduino_*`
-   - Abra o Arduino IDE novamente
-
-## 📚 Referências
-
-- [ArduinoJson Documentation](https://arduinojson.org/)
-- [ArduinoJson GitHub](https://github.com/bblanchon/ArduinoJson)
-- [Arduino Library Manager Guide](https://docs.arduino.cc/software/ide-v1/tutorials/installing-libraries)
+> **Não é necessário instalar nada à mão.** Rode `pio run` e o PlatformIO baixa a plataforma
+> `espressif8266` e o ArduinoJson automaticamente, em um cache local do projeto (`.pio/`).
 
 ---
 
-Após instalar a biblioteca, o código compilará sem erros!
+## Se o build falhar em `ArduinoJson.h`
+
+| Sintoma | O que fazer |
+|---|---|
+| `fatal error: ArduinoJson.h: No such file or directory` | `pio pkg install` (ou apague `.pio/` e rode `pio run` de novo) |
+| Erros de API (`StaticJsonDocument` não existe, `JsonDocument` exige alocador) | Uma versão 7.x foi resolvida. Fixe a 6.x no `platformio.ini` e limpe: `pio run --target clean` |
+| Download falha / timeout | Rede corporativa bloqueando o registry. Configure o proxy (`HTTP_PROXY` / `HTTPS_PROXY`) ou instale offline (ver abaixo) |
+
+Para conferir o que foi resolvido:
+
+```bash
+pio pkg list           # dependências instaladas neste projeto
+pio pkg outdated       # versões disponíveis
+```
+
+---
+
+## Por que 6.x, e não 7.x
+
+O código usa a API do ArduinoJson **6** — `StaticJsonDocument<N>`, `DeserializationOption::Filter`
+e o parse zero-copy via buffer mutável. A 7.x removeu os documentos estáticos em favor de alocação
+dinâmica, o que muda a assinatura do parse e o orçamento de memória do firmware.
+
+| Versão | Status | Observação |
+|:---:|:---:|---|
+| 6.21.x | ✅ | Versão de referência do projeto |
+| 6.22.x | ✅ | Compatível (mesma API) |
+| 7.x | ❌ | API incompatível — `StaticJsonDocument` foi removido |
+| 5.x | ❌ | API antiga |
+
+---
+
+## Instalação offline (fallback)
+
+Se o registry do PlatformIO estiver inacessível:
+
+1. Baixe o `.zip` de uma release **6.x** em <https://github.com/bblanchon/ArduinoJson/releases>
+2. Extraia em `lib/ArduinoJson/` na raiz do projeto — o PlatformIO resolve `lib/` antes do registry
+3. Rode `pio run`
+
+---
+
+<details>
+<summary><b>Legado: instalação pelo Arduino IDE</b></summary>
+
+<br>
+
+Relevante apenas se você compilar o código fora do PlatformIO.
+
+1. `Sketch` → `Include Library` → `Manage Libraries…` (`Ctrl+Shift+I`)
+2. Busque `ArduinoJson` e localize **"ArduinoJson by Benoit Blanchon"**
+3. Selecione uma versão **6.x** (ex.: 6.21.5) — **não** instale 5.x nem 7.x — e clique em `Install`
+4. Feche e reabra o Library Manager, então recompile (`Ctrl+R`)
+
+Alternativa manual: baixe o `.zip` da release 6.x e use
+`Sketch` → `Include Library` → `Add .ZIP Library…`, depois reinicie o IDE.
+
+Se o erro persistir, confirme a board selecionada em
+`Tools` → `Board` → `LOLIN(WEMOS) D1 R2 & mini` e limpe o cache de build
+(`%LOCALAPPDATA%\Temp\arduino_*` no Windows) com o IDE fechado.
+
+</details>
+
+---
+
+## Referências
+
+- [Documentação do ArduinoJson](https://arduinojson.org/)
+- [ArduinoJson no GitHub](https://github.com/bblanchon/ArduinoJson)
+- [Migração 6 → 7](https://arduinojson.org/v7/how-to/upgrade-from-v6/)
+- [PlatformIO — `lib_deps`](https://docs.platformio.org/en/latest/projectconf/sections/env/options/library/lib_deps.html)
