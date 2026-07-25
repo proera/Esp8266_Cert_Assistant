@@ -49,10 +49,11 @@ void LedController::update() {
 
   if (_answerActive) {
     switch (_mode) {
-      case MODE_HOLD:  renderHold(now);     break;
-      case MODE_CHASE: renderChase(now);    break;
-      case MODE_ERROR: renderError(now);    break;
-      case MODE_SEQ:   renderSeq(now);      break;
+      case MODE_HOLD:       renderHold(now);        break;
+      case MODE_CHASE:      renderChase(now);       break;
+      case MODE_ERROR:      renderError(now);       break;
+      case MODE_SEQ:        renderSeq(now);         break;
+      case MODE_PROCESSING: renderProcessing(now);  break;
     }
     return;
   }
@@ -77,7 +78,44 @@ void LedController::update() {
 }
 
 void LedController::setConnected(bool connected) {
+  // Stream caiu no meio de um "processando": aborta. Senão o LED C piscaria
+  // indefinidamente (o processando não tem TTL) escondendo a queda da conexão.
+  // Ao reabrir, o status inicial do servidor ressincroniza o estado.
+  if (!connected && _answerActive && _mode == MODE_PROCESSING) {
+    Serial.println(F("[LED] Stream caiu durante o processamento -> abortando LED C"));
+    allOff();
+    _answerActive = false;
+  }
   _connected = connected;
+}
+
+// ========================================
+// D) Processando (status solving): LED C piscando até answer / error / idle
+// ========================================
+void LedController::showProcessing() {
+  if (_answerActive && _mode == MODE_PROCESSING) {
+    return;  // já processando: não reinicia o piscar (evita glitch visual)
+  }
+  _answerActive = true;
+  _firstAnswerReceived = true;  // encerra o blackout pós-boot, se ativo
+  _mode = MODE_PROCESSING;
+  _animStart = millis();
+  allOff();
+}
+
+void LedController::stopProcessing() {
+  // Só encerra se o que está no ar é o "processando". Se for uma resposta,
+  // ignora: no fluxo normal o status idle chega logo após o answer.
+  if (_answerActive && _mode == MODE_PROCESSING) {
+    allOff();
+    _answerActive = false;
+  }
+}
+
+void LedController::renderProcessing(unsigned long now) {
+  // Sem TTL: pisca até um answer/error/idle chegar (ou o stream cair).
+  bool on = ((now / LED_PROC_BLINK_MS) % 2) == 0;
+  writeMask(on ? BIT(LED_PROC_INDEX) : 0);
 }
 
 // ========================================

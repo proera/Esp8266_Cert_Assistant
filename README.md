@@ -4,7 +4,7 @@ Firmware para D1 Mini (ESP8266) que consome o stream da API **CertMind** por **u
 
 O ESP8266 é **apenas consumidor**: abre um `GET` e fica escutando. Não faz `POST`, não envia imagem, não faz request/response.
 
-> **Versão 2.2** — transporte por stream SSE persistente em texto claro (substituiu o polling HTTPS da v1.0) e janela de silêncio no boot (LEDs apagados após 5 min, até a 1ª resposta). Veja o changelog no topo de `src/main.cpp`.
+> **Versão 2.4** — transporte por stream SSE persistente em texto claro (substituiu o polling HTTPS da v1.0), janela de silêncio no boot (LEDs apagados após 5 min, até a 1ª resposta), de-framing do `Transfer-Encoding: chunked` (v2.3) e LED de processamento a partir do evento `status` (v2.4). Veja o changelog no topo de `src/main.cpp`.
 
 ## 🏗️ Arquitetura
 
@@ -98,6 +98,8 @@ pio run --target clean  # Limpa artefatos de build
 - **Método:** `GET {STREAM_HOST}:{STREAM_PORT}{STREAM_PATH}` — `Content-Type: text/event-stream`.
 - A conexão é **aberta uma vez e fica viva indefinidamente**; o servidor empurra eventos conforme ocorrem.
 - Linhas iniciadas por `:` são comentários de prova de vida (`: connected` na abertura, `: ping` a cada 15 s).
+- O servidor difunde **dois eventos**: `answer` (a resposta resolvida) e `status` (andamento do processamento). Outros nomes de evento são descartados em silêncio.
+- O corpo chega com `Transfer-Encoding: chunked` (o backend é Kestrel) e o firmware desmonta os frames antes de montar as linhas SSE.
 - Um evento `answer` traz um JSON (`SolverOutput`) com os campos abaixo. O firmware lê apenas o necessário (ignora `explanation` no parse, via filtro do ArduinoJson):
 
 | Campo | Tipo | Significado |
@@ -111,6 +113,15 @@ pio run --target clean  # Limpa artefatos de build
 | `answerText` | string | Resposta legível |
 | `explanation` | string | Justificativa (não usada pelo firmware) |
 | `elapsedMilliseconds` | long | Tempo de processamento no servidor |
+
+- Um evento `status` traz o andamento do processamento no servidor:
+
+| Campo | Tipo | Significado |
+|---|---|---|
+| `state` | string | `solving` (requisição aguardando a IA), `idle` (ocioso) ou `error` (o processamento falhou) |
+| `activeSolves` | int | Quantas requisições estão em andamento no servidor (informativo, só vai para o log) |
+
+Sequência normal de um solve: `status solving` → `answer` → `status idle`. Em falha: `status solving` → `status error` (**sem** `answer`). Ao abrir a conexão o servidor manda um `status` com o estado atual, então reconectar no meio de um processamento já traz `solving`.
 
 ## 💡 Comportamento dos LEDs
 
@@ -126,7 +137,17 @@ Ao ligar, os LEDs sinalizam conexão/ocioso normalmente por **`LED_BOOT_BLINK_MS
 |---|---|
 | Conectando / sem WiFi / reconectando | LEDs das pontas (**A e E**) piscam juntos rápido (~150 ms) |
 | Conectado, ocioso | Heartbeat discreto: **LED A** dá 1 pulso curto (~80 ms) a cada ~2 s |
-| Segurando resposta `single`/`multiple` | Mantém a(s) posição(ões) acesa(s), sem heartbeat |
+| Segurando resposta `single`/`multiple`/`yesno` | Mantém a(s) posição(ões) acesa(s) por 12 s, sem heartbeat |
+
+### Evento `status` (LED de processamento)
+
+| `state` | Padrão |
+|---|---|
+| `solving` | **LED C** (do meio) pisca a ~250 ms **continuamente**, até chegar `answer`, `status error` ou `status idle`. Vence uma resposta que esteja sendo exibida e encerra a janela de silêncio do boot. |
+| `error` | Padrão de erro: 5 LEDs piscam juntos 3× e voltam ao ocioso |
+| `idle` | Encerra o piscar do LED C. **Não apaga uma resposta em exibição** — no fluxo normal o `idle` chega logo após o `answer` |
+
+Se o stream cair durante um `solving`, o piscar do LED C é abortado e os LEDs voltam a sinalizar a conexão (pontas A+E) — do contrário a queda ficaria escondida. Ao reabrir, o `status` inicial do servidor ressincroniza o estado.
 
 ### Eventos `answer`
 
@@ -135,9 +156,9 @@ Ao ligar, os LEDs sinalizam conexão/ocioso normalmente por **`LED_BOOT_BLINK_MS
 | `questionType == "test"` | Varredura (chase) A→B→C→D→E, 2×, e volta ao ocioso |
 | `hasData == false` (ilegível) | 5 LEDs piscam juntos 3× (~250 ms on/off) e apagam |
 | Erro ao parsear o JSON do evento | Mesmo padrão de erro (5 LEDs piscando 3×) — em vez de falhar em silêncio |
-| `single` | 1 LED aceso (a letra), **mantido** até o próximo `answer` |
-| `multiple` | LEDs das letras acesos simultaneamente, **mantidos** |
-| `yesno` | **Sequencial** por afirmação: Sim = aceso fixo, Não = piscando rápido (~1,5 s cada, gap ~0,4 s); 2 passadas |
+| `single` | 1 LED aceso (a letra), **retido por `LED_HOLD_TTL_MS` (12 s)** e então volta ao heartbeat |
+| `multiple` | LEDs das letras acesos simultaneamente, retidos pelo mesmo TTL |
+| `yesno` | **Simultâneo**: cada afirmação acende seu LED ao mesmo tempo — Sim = fixo, Não = piscando (~350 ms) — retido pelo mesmo TTL |
 | `dropdown` / `ordering` / `matching` | **Sequencial** acendendo a posição (1–5) de cada slot, na ordem; 2 passadas |
 
 Sequências com mais de 5 itens são truncadas para 5 (com aviso no Serial). Slot fora de 1–5 → pisca os 5 juntos 1× naquele passo e segue.
@@ -152,8 +173,9 @@ Reconecta se (a) o socket cair, (b) o WiFi cair, ou (c) passar `STREAM_TIMEOUT_M
 
 1. **Conexão viva:** Serial mostra `[SSE] Stream aberto`; `: ping` a cada 15 s sem reconectar; LED A em heartbeat quando ocioso.
 2. **Evento de teste (sem custo de IA):** `POST {BASE}/api/exam/solve` com `Test=true` (multipart) → chase A→E em < ~1 s.
-3. **single / multiple:** confirme 1 LED / vários LEDs acesos e mantidos.
-4. **yesno:** confirme a sequência Sim=fixo / Não=piscando, na ordem das afirmações.
+3. **single / multiple:** confirme 1 LED / vários LEDs acesos e retidos por ~12 s.
+4. **yesno:** confirme os LEDs das afirmações acesos ao mesmo tempo — Sim fixo, Não piscando.
+4b. **Processando (`status`):** de um PC, `POST` real (sem `Test`) → o **LED C** começa a piscar imediatamente e continua durante todo o processamento; ao chegar o `answer`, o C para e a resposta aparece; o `status idle` seguinte **não** apaga a resposta. Se o processamento falhar, chega `status error` → 5 LEDs piscando 3×.
 5. **dropdown / ordering / matching:** confirme a sequência acendendo a posição de cada slot.
 6. **Ilegível:** force `hasData=false` → 5 LEDs piscando juntos 3×.
 7. **Reconexão:** derrube WiFi/servidor → padrão A+E piscando + log de backoff; ao voltar, reconecta e o backoff zera.

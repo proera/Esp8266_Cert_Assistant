@@ -15,6 +15,10 @@
  *      Toda resposta começa com um blank curto (LED_HOLD_INTAKE_MS) para tornar
  *      visível a chegada mesmo de respostas iguais consecutivas (ex.: A depois A).
  *   5. Conexão caindo/reconectando vence o estado ocioso.
+ *   6. "Processando" (status solving => LED C piscando) vence resposta segurada e
+ *      dura até chegar answer / status error / status idle. Se o stream cair no
+ *      meio, é abortado — a saúde da conexão volta a ser sinalizada e o status
+ *      inicial ressincroniza o estado quando o stream reabre.
  *
  * Janela de boot: após begin(), por LED_BOOT_BLINK_MS os LEDs sinalizam
  * conexão/ocioso normalmente; em seguida ficam apagados até a 1ª resposta do
@@ -40,6 +44,16 @@ class LedController {
     // Saúde do stream. Só afeta a exibição quando NÃO há resposta ativa.
     void setConnected(bool connected);
 
+    // --- Evento status (state="solving"/"idle") ---
+    // Processando: LED C piscando até chegar answer / error / idle. Tem
+    // prioridade sobre resposta segurada (uma nova requisição em andamento
+    // significa que a resposta exibida está prestes a ser substituída).
+    void showProcessing();
+    // Encerra o "processando" (state="idle"). NÃO tem efeito se o que está
+    // sendo exibido é uma resposta: no fluxo normal o idle chega logo após o
+    // answer e não deve apagar a resposta.
+    void stopProcessing();
+
     // --- Eventos de resposta (interrompem o que estiver tocando) ---
     void showSingle(uint8_t pos);                       // pos 1..5
     void showMultiple(const uint8_t* pos, uint8_t n);   // posições 1..5
@@ -49,7 +63,7 @@ class LedController {
     void showError();                                   // 5 LEDs piscando juntos
 
   private:
-    enum Mode { MODE_HOLD, MODE_CHASE, MODE_ERROR, MODE_SEQ };
+    enum Mode { MODE_HOLD, MODE_CHASE, MODE_ERROR, MODE_SEQ, MODE_PROCESSING };
 
     // Tipo de passo numa sequência.
     enum StepType { STEP_SOLID, STEP_BLINK, STEP_BLINK5 };
@@ -85,6 +99,7 @@ class LedController {
     void renderChase(unsigned long now);
     void renderError(unsigned long now);
     void renderSeq(unsigned long now);
+    void renderProcessing(unsigned long now);
 
     void startHold();
     void startSeq();

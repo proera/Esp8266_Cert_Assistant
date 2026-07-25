@@ -9,15 +9,18 @@
 static const unsigned long kBackoffTable[] = STREAM_BACKOFF_TABLE;
 static const uint8_t kBackoffCount = sizeof(kBackoffTable) / sizeof(kBackoffTable[0]);
 
-void SseClient::begin(AnswerCallback cb) {
-  _cb = cb;
+void SseClient::begin(AnswerCallback onAnswer, StatusCallback onStatus) {
+  _onAnswer = onAnswer;
+  _onStatus = onStatus;
   _state = ST_DISCONNECTED;
   _nextAttempt = 0;       // tenta conectar assim que houver WiFi
   _backoffIdx = 0;
   _lineLen = 0;
   _lineOverflow = false;
   _dataLen = 0;
-  _eventIsAnswer = false;
+  _evtType = EVT_NONE;
+  _chunked = false;
+  beginChunkSize();
 }
 
 // ========================================
@@ -94,10 +97,12 @@ void SseClient::tryConnect() {
   _state = ST_HEADERS;
   _statusOk = false;
   _ctEventStream = false;
+  _chunked = false;
   _lineLen = 0;
   _lineOverflow = false;
   _dataLen = 0;
-  _eventIsAnswer = false;
+  _evtType = EVT_NONE;
+  beginChunkSize();
   _lastActivity = millis();
 }
 
@@ -123,7 +128,8 @@ void SseClient::closeConnection() {
   _lineLen = 0;
   _lineOverflow = false;
   _dataLen = 0;
-  _eventIsAnswer = false;
+  _evtType = EVT_NONE;
+  beginChunkSize();
 }
 
 void SseClient::resetBackoff() {
@@ -137,48 +143,135 @@ void SseClient::checkTimeout() {
 }
 
 // ========================================
-// Leitura incremental: bytes -> linhas
+// Leitura incremental: bytes -> (de-framing) -> linhas
 // ========================================
 void SseClient::pump(bool headerPhase) {
+  const State expected = headerPhase ? ST_HEADERS : ST_STREAMING;
+
   while (_client.available()) {
     char c = (char)_client.read();
     _lastActivity = millis();  // qualquer byte recebido conta como atividade
 
-    if (c == '\r') {
-      continue;  // aceita tanto \n quanto \r\n
-    }
-
-    if (c != '\n') {
-      if (_lineLen < SSE_MAX_LINE - 1) {
-        _lineBuf[_lineLen++] = c;
-      } else {
-        _lineOverflow = true;  // estoura o teto: descarta até a quebra de linha
-      }
-      continue;
-    }
-
-    // Quebra de linha => linha completa.
-    if (_lineOverflow) {
-      Serial.println(F("[SSE] Linha excedeu o teto — descartada"));
-      _lineOverflow = false;
-      _lineLen = 0;
-      continue;
-    }
-
-    _lineBuf[_lineLen] = '\0';
-    size_t len = _lineLen;
-    _lineLen = 0;
-
     if (headerPhase) {
-      processHeaderLine(_lineBuf, len);
-      if (_state != ST_HEADERS) {
-        return;  // transicionou para STREAMING ou agendou retry
-      }
+      feedLine(c, true);  // headers nunca são chunked
+    } else if (_chunked) {
+      feedChunkedByte(c);
     } else {
-      processSseLine(_lineBuf, len);
+      feedLine(c, false);
     }
 
-    yield();  // alimenta o watchdog entre linhas
+    if (_state != expected) {
+      return;  // transicionou (headers prontos) ou agendou retry
+    }
+  }
+}
+
+// Monta linhas a partir do fluxo de bytes do corpo LÓGICO (já desmoldurado, se
+// chunked) ou dos headers, e despacha cada linha completa.
+void SseClient::feedLine(char c, bool headerPhase) {
+  if (c == '\r') {
+    return;  // aceita tanto \n quanto \r\n
+  }
+
+  if (c != '\n') {
+    if (_lineLen < SSE_MAX_LINE - 1) {
+      _lineBuf[_lineLen++] = c;
+    } else {
+      _lineOverflow = true;  // estoura o teto: descarta até a quebra de linha
+    }
+    return;
+  }
+
+  // Quebra de linha => linha completa.
+  if (_lineOverflow) {
+    Serial.println(F("[SSE] Linha excedeu o teto — descartada"));
+    _lineOverflow = false;
+    _lineLen = 0;
+    return;
+  }
+
+  _lineBuf[_lineLen] = '\0';
+  size_t len = _lineLen;
+  _lineLen = 0;
+
+  if (headerPhase) {
+    processHeaderLine(_lineBuf, len);
+  } else {
+    processSseLine(_lineBuf, len);
+  }
+
+  yield();  // alimenta o watchdog entre linhas
+}
+
+// ========================================
+// De-framing do Transfer-Encoding: chunked (RFC 9112 §7.1)
+// ========================================
+// Formato na conexão: "<size-hex>[;ext]\r\n<size bytes de dados>\r\n" repetido,
+// terminando com um chunk de tamanho 0. Só os bytes de DADOS chegam ao montador
+// de linhas — o size e o CRLF terminador são consumidos aqui. É justamente esse
+// CRLF que, sem o de-framing, cortava a linha "data:" partida entre dois chunks.
+void SseClient::beginChunkSize() {
+  _chunkState = CHUNK_SIZE;
+  _chunkRemaining = 0;
+  _chunkInExt = false;
+  _chunkHasDigits = false;
+}
+
+static int hexDigit(char c) {
+  if (c >= '0' && c <= '9') return c - '0';
+  if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+  if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+  return -1;
+}
+
+void SseClient::feedChunkedByte(char c) {
+  switch (_chunkState) {
+    case CHUNK_SIZE:
+      if (c == '\n') {
+        if (!_chunkHasDigits) {
+          // Linha sem nenhum dígito hex não é um chunk-size: é o trailer vazio
+          // que fecha o last-chunk, ou ruído entre frames. Só rearma — tratar
+          // isso como tamanho 0 dispararia um retry a mais (e o backoff pularia
+          // um degrau).
+          beginChunkSize();
+        } else if (_chunkRemaining == 0) {
+          // Chunk de tamanho 0 = fim do corpo: o servidor encerrou o stream
+          // (que deveria ser infinito). Reabre a conexão.
+          scheduleRetry("servidor encerrou o corpo (last-chunk)");
+        } else if (_chunkRemaining > SSE_MAX_CHUNK) {
+          scheduleRetry("chunk-size implausível — framing dessincronizado");
+        } else {
+          _chunkState = CHUNK_DATA;
+        }
+        return;
+      }
+      if (c == ';') {
+        _chunkInExt = true;  // chunk-extension: ignora o resto da linha
+        return;
+      }
+      if (!_chunkInExt) {
+        int d = hexDigit(c);
+        if (d >= 0) {
+          _chunkRemaining = (_chunkRemaining << 4) | (uint32_t)d;
+          _chunkHasDigits = true;
+        }
+        // Não-hex fora de extensão (ex.: o '\r') é ignorado.
+      }
+      return;
+
+    case CHUNK_DATA:
+      feedLine(c, false);  // byte do corpo lógico
+      if (--_chunkRemaining == 0) {
+        _chunkState = CHUNK_CRLF;
+      }
+      return;
+
+    case CHUNK_CRLF:
+      // Terminador do chunk: NÃO vai ao montador de linhas.
+      if (c == '\n') {
+        beginChunkSize();
+      }
+      return;
   }
 }
 
@@ -209,20 +302,29 @@ void SseClient::processHeaderLine(const char* line, size_t len) {
     if (!_ctEventStream) {
       Serial.println(F("[SSE] Aviso: Content-Type não é text/event-stream (seguindo mesmo assim)"));
     }
-    Serial.println(F("[SSE] Stream aberto — recebendo eventos"));
+    Serial.print(F("[SSE] Stream aberto — recebendo eventos (framing: "));
+    Serial.print(_chunked ? F("chunked") : F("identity"));
+    Serial.println(F(")"));
     resetBackoff();  // conexão saudável: zera o backoff
     _state = ST_STREAMING;
-    _eventIsAnswer = false;
+    _evtType = EVT_NONE;
     _dataLen = 0;
+    beginChunkSize();  // o corpo começa por um chunk-size (se chunked)
     return;
   }
 
+  // Loga TODA linha de header. Sem isso só o status aparecia na serial, e
+  // detalhes de transporte (ex.: Transfer-Encoding) ficavam invisíveis —
+  // foi o que manteve a ausência do de-framing chunked escondida.
+  Serial.print(F("[SSE] < "));
+  Serial.println(line);
+
   if (strncmp(line, "HTTP/", 5) == 0) {
     _statusOk = (strstr(line, " 200 ") != nullptr) || containsCI(line, "200 OK");
-    Serial.print(F("[SSE] "));
-    Serial.println(line);
   } else if (containsCI(line, "content-type") && containsCI(line, "text/event-stream")) {
     _ctEventStream = true;
+  } else if (containsCI(line, "transfer-encoding") && containsCI(line, "chunked")) {
+    _chunked = true;
   }
 }
 
@@ -257,7 +359,13 @@ void SseClient::processSseLine(const char* line, size_t len) {
 
   const char* v;
   if ((v = skipFieldPrefix(line, "event:")) != nullptr) {
-    _eventIsAnswer = (strcmp(v, "answer") == 0);
+    if (strcmp(v, "answer") == 0) {
+      _evtType = EVT_ANSWER;
+    } else if (strcmp(v, "status") == 0) {
+      _evtType = EVT_STATUS;
+    } else {
+      _evtType = EVT_NONE;  // evento desconhecido: descarta em silêncio
+    }
     return;
   }
 
@@ -268,7 +376,7 @@ void SseClient::processSseLine(const char* line, size_t len) {
     if (need >= SSE_MAX_DATA) {
       Serial.println(F("[SSE] Payload excedeu o teto — evento descartado"));
       _dataLen = 0;
-      _eventIsAnswer = false;  // descarta este evento
+      _evtType = EVT_NONE;  // descarta este evento
       return;
     }
     if (_dataLen > 0) {
@@ -284,13 +392,15 @@ void SseClient::processSseLine(const char* line, size_t len) {
 }
 
 void SseClient::dispatchEvent() {
-  if (_eventIsAnswer && _dataLen > 0) {
+  if (_dataLen > 0) {
     _dataBuf[_dataLen] = '\0';
-    if (_cb) {
-      _cb(_dataBuf);
+    if (_evtType == EVT_ANSWER && _onAnswer) {
+      _onAnswer(_dataBuf);
+    } else if (_evtType == EVT_STATUS && _onStatus) {
+      _onStatus(_dataBuf);
     }
   }
   // Zera os buffers do evento.
-  _eventIsAnswer = false;
+  _evtType = EVT_NONE;
   _dataLen = 0;
 }

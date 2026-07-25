@@ -41,6 +41,11 @@
 #define SSE_MAX_LINE 4096   // teto por linha recebida
 #define SSE_MAX_DATA 4096   // teto do payload acumulado (campos data:)
 
+// Teto do chunk-size do Transfer-Encoding: chunked. Guarda contra
+// desalinhamento do framing (um hex lido de lixo daria um chunk gigante):
+// acima disso o parser assume dessincronização e reabre o stream.
+#define SSE_MAX_CHUNK 65535UL
+
 // ========================================
 // CONFIGURAÇÕES DE PINOS DOS LEDs
 // ========================================
@@ -85,6 +90,13 @@
 #define LED_SEQ_BLINK_MS 200     // período do piscar rápido (resposta "Não")
 #define LED_SEQ_PASSES 2         // toca a sequência + 1 repetição
 #define LED_SEQ_ERRBLINK_MS 250  // blink dos 5 juntos p/ slot inválido
+
+// D) Processando (evento status, state="solving"): LED do meio (C) piscando
+// continuamente até chegar answer / status error / status idle. Padrão distinto
+// de todos os outros: pontas A+E = conexão, heartbeat em A = ocioso, 5 juntos =
+// erro, chase A->E = test, LEDs fixos = resposta.
+#define LED_PROC_INDEX 2         // LED C (posição 3) = índice 2
+#define LED_PROC_BLINK_MS 250    // meio-período: 250 ms aceso / 250 ms apagado
 
 // B) HOLD (single / multiple / yesno): resposta retida com TTL.
 // Toda exibição começa com um blank curto (transição visível mesmo p/ respostas

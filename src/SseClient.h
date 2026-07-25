@@ -8,8 +8,14 @@
  * Não usa HTTPClient (que espera o corpo terminar) — monta o GET na mão e lê
  * via WiFiClient byte a byte.
  *
- * No fim de cada evento "answer", chama o callback registrado com o payload
- * (JSON) acumulado dos campos data:.
+ * O corpo chega com Transfer-Encoding: chunked (o backend é Kestrel), então há
+ * uma camada de de-framing: feedChunkedByte() consome o chunk-size e o CRLF
+ * terminador de cada frame e entrega a feedLine() apenas os bytes do corpo
+ * lógico. Servidores que respondem sem chunked seguem pelo caminho direto.
+ *
+ * No fim de cada evento "answer" ou "status", chama o callback correspondente
+ * com o payload (JSON) acumulado dos campos data:. Outros nomes de evento são
+ * descartados em silêncio.
  *
  * Reconecta automaticamente com backoff progressivo se o socket cair, o WiFi
  * cair, ou nenhuma linha chegar dentro de STREAM_TIMEOUT_MS.
@@ -27,8 +33,10 @@ class SseClient {
     // Recebe o buffer MUTÁVEL do payload (char*) — permite ao ArduinoJson
     // parsear em modo zero-copy (sem copiar strings/chaves no pool do documento).
     typedef void (*AnswerCallback)(char* payload);
+    // Mesmo contrato de buffer, para o evento "status".
+    typedef AnswerCallback StatusCallback;
 
-    void begin(AnswerCallback cb);
+    void begin(AnswerCallback onAnswer, StatusCallback onStatus);
 
     // Chamar a cada iteração do loop(): gerencia conexão, parsing e reconexão.
     void loop();
@@ -39,8 +47,17 @@ class SseClient {
   private:
     enum State { ST_DISCONNECTED, ST_HEADERS, ST_STREAMING };
 
+    // Evento SSE corrente. EVT_NONE cobre "nenhum evento" e nomes desconhecidos
+    // (descartados em silêncio — novos eventos podem surgir no servidor).
+    enum EventType { EVT_NONE, EVT_ANSWER, EVT_STATUS };
+
+    // Passos do de-framing chunked: linha do chunk-size (hex) -> bytes de
+    // dados -> CRLF terminador -> próximo chunk-size.
+    enum ChunkState { CHUNK_SIZE, CHUNK_DATA, CHUNK_CRLF };
+
     WiFiClient _client;
-    AnswerCallback _cb = nullptr;
+    AnswerCallback _onAnswer = nullptr;
+    StatusCallback _onStatus = nullptr;
     State _state = ST_DISCONNECTED;
 
     unsigned long _lastActivity = 0;  // última linha/byte recebido
@@ -57,8 +74,21 @@ class SseClient {
     bool _statusOk = false;
     bool _ctEventStream = false;
 
+    // De-framing do corpo. O backend (Kestrel) serve o SSE com
+    // Transfer-Encoding: chunked, então o corpo na conexão NÃO é o corpo lógico:
+    // cada bloco vem prefixado pelo tamanho em hex e sufixado por CRLF. Sem
+    // desmontar esses frames, o chunk-size aparece como linha solta (ignorada
+    // por sorte, pois não casa com nenhum campo SSE) e o CRLF terminador vira
+    // uma linha vazia espúria — que encerra o evento antes da hora sempre que um
+    // chunk termina no meio de uma linha "data:", truncando o payload.
+    bool _chunked = false;                  // Transfer-Encoding: chunked nos headers
+    ChunkState _chunkState = CHUNK_SIZE;
+    uint32_t _chunkRemaining = 0;           // bytes de dados restantes no chunk
+    bool _chunkInExt = false;               // dentro de chunk-extension (após ';')
+    bool _chunkHasDigits = false;           // a linha de size tem ao menos 1 hex
+
     // Estado do evento SSE corrente
-    bool _eventIsAnswer = false;
+    EventType _evtType = EVT_NONE;
     char _dataBuf[SSE_MAX_DATA];
     size_t _dataLen = 0;
 
@@ -68,6 +98,9 @@ class SseClient {
     void resetBackoff();
 
     void pump(bool headerPhase);          // lê bytes disponíveis -> linhas
+    void feedLine(char c, bool headerPhase);  // byte do corpo lógico -> linha
+    void feedChunkedByte(char c);         // desmonta o frame; dados -> feedLine
+    void beginChunkSize();                // rearma a leitura de um chunk-size
     void processHeaderLine(const char* line, size_t len);
     void processSseLine(const char* line, size_t len);
     void dispatchEvent();

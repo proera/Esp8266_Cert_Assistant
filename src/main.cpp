@@ -1,12 +1,13 @@
 /*
  * Sistema CertMind - Cliente de Stream ESP8266 (D1 Mini)
  *
- * Versão: 2.2
+ * Versão: 2.4
  *
  * Descrição: Consome o stream SSE da API CertMind por UMA conexão HTTP
  * persistente (GET, texto claro, sem TLS) e aciona 5 LEDs (A-E) conforme
  * cada situação emitida pelo backend (test, ilegível, single, multiple,
- * yesno, dropdown, ordering, matching) e a saúde da conexão.
+ * yesno, dropdown, ordering, matching), o andamento do processamento no
+ * servidor (evento status) e a saúde da conexão.
  *
  * O ESP8266 é apenas consumidor: abre o GET e fica escutando. Não faz POST,
  * não envia imagem, não faz request/response.
@@ -14,6 +15,28 @@
  * Hardware: D1 Mini (ESP8266) + 5 LEDs (posições/letras A-E => 1-5).
  *
  * Changelog:
+ *   2.4 - Evento "status" (LED de processamento). O servidor difunde
+ *         status {"state":"solving"} antes de chamar a IA, answer ao terminar e
+ *         status {"state":"idle"} em seguida (ou status {"state":"error"} se o
+ *         processamento falhar, sem answer). Antes o firmware só reconhecia
+ *         event: answer e descartava o status em silêncio — o andamento não
+ *         aparecia em lugar nenhum. Agora: solving => LED C (do meio) piscando a
+ *         250 ms até chegar answer/error/idle; error => padrão de erro; idle =>
+ *         encerra o processando, mas NÃO apaga uma resposta em exibição (no fluxo
+ *         normal o idle chega logo após o answer). O solving vence resposta
+ *         segurada e encerra o blackout pós-boot. Se o stream cair no meio do
+ *         processamento o padrão é abortado, para não esconder a queda — ao
+ *         reabrir, o status inicial do servidor ressincroniza o estado.
+ *   2.3 - Transporte: o corpo do SSE vem em Transfer-Encoding: chunked (Kestrel)
+ *         e o parser não desmontava os frames. O chunk-size aparecia como linha
+ *         solta (ignorada por sorte) e o CRLF terminador de cada chunk virava uma
+ *         linha vazia espúria: quando um chunk terminava NO MEIO de uma linha
+ *         "data:", a linha era cortada ali -> JSON truncado -> showError(). Só
+ *         funcionava porque o Kestrel costuma emitir 1 chunk por evento. Agora
+ *         SseClient::feedChunkedByte() consome size/CRLF e entrega ao montador de
+ *         linhas apenas o corpo lógico. Além disso, TODO header de resposta passa
+ *         a ser logado ("[SSE] < ..."): antes só a linha de status ia para a
+ *         serial, e foi isso que manteve o problema de framing invisível.
  *   2.2 - Janela de boot: ao ligar, os LEDs sinalizam conexão/ocioso por
  *         LED_BOOT_BLINK_MS (5 min) e então ficam APAGADOS até a 1ª resposta do
  *         backend. O stream segue ativo (ping + logs na serial) durante o
@@ -179,6 +202,51 @@ void handleAnswer(char* payload) {
 }
 
 // ========================================
+// Decisão de LEDs a partir do payload do evento "status"
+// ========================================
+// Sequência normal de um solve: solving -> answer -> idle. Em falha:
+// solving -> error (sem answer). O idle que chega logo após um answer NÃO deve
+// apagar a resposta — quem garante isso é LedController::stopProcessing(), que
+// só age se o que está no ar é o próprio "processando".
+void handleStatus(char* payload) {
+  g_doc.clear();
+  DeserializationError err =
+      deserializeJson(g_doc, payload, DeserializationOption::Filter(g_filter));
+
+  if (err) {
+    // Diferente do answer, um status corrompido NÃO aciona leds.showError():
+    // status é informativo e o padrão de erro é reservado às respostas (piscar
+    // os 5 aqui faria o usuário ler "questão ilegível"). Fica registrado na serial.
+    Serial.print(F("[JSON] Erro ao parsear status: "));
+    Serial.println(err.c_str());
+    return;
+  }
+
+  const char* state = g_doc["state"] | "";
+  int activeSolves = g_doc["activeSolves"] | 0;
+
+  Serial.print(F("[STATUS] state="));
+  Serial.print(state);
+  Serial.print(F(" activeSolves="));
+  Serial.println(activeSolves);
+
+  if (strcmp(state, "solving") == 0) {
+    // Vence resposta segurada: há uma nova requisição em andamento.
+    leds.showProcessing();
+    return;
+  }
+
+  if (strcmp(state, "error") == 0) {
+    Serial.println(F("[STATUS] falha no processamento -> erro (5 LEDs piscando)"));
+    leds.showError();
+    return;
+  }
+
+  // idle — e qualquer state desconhecido, que a spec manda tratar como idle.
+  leds.stopProcessing();
+}
+
+// ========================================
 // SETUP
 // ========================================
 void setup() {
@@ -188,7 +256,7 @@ void setup() {
   Serial.println(F("\n\n"));
   Serial.println(F("╔═══════════════════════════════════════════════╗"));
   Serial.println(F("║  CertMind - Cliente de Stream ESP8266         ║"));
-  Serial.println(F("║  Versão: 2.2 (SSE)                            ║"));
+  Serial.println(F("║  Versão: 2.4 (SSE)                            ║"));
   Serial.println(F("╚═══════════════════════════════════════════════╝"));
 
   leds.begin();
@@ -202,12 +270,16 @@ void setup() {
   g_filter["slots"] = true;
   g_filter["slotCount"] = true;
   g_filter["answerText"] = true;
+  // Campos do evento status (o mesmo filtro serve aos dois eventos: chaves que
+  // não existem no payload recebido são simplesmente ignoradas).
+  g_filter["state"] = true;
+  g_filter["activeSolves"] = true;
 
   // Conexão WiFi inicial (bloqueante apenas no boot); auto-reconnect cuida do resto.
   wifiManager.connect();
   WiFi.setAutoReconnect(true);
 
-  sse.begin(handleAnswer);
+  sse.begin(handleAnswer, handleStatus);
 
   Serial.println(F("✓ Setup concluído. Aguardando stream...\n"));
 }
