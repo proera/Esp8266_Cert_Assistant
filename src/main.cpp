@@ -1,7 +1,7 @@
 /*
  * Sistema CertMind - Cliente de Stream ESP32-S3 (Super Mini)
  *
- * Versão: 3.0
+ * Versão: 3.1
  *
  * Descrição: Consome o stream SSE da API CertMind por UMA conexão HTTP
  * persistente (GET, texto claro, sem TLS) e aciona os LEDs da barra WS2812
@@ -18,6 +18,15 @@
  * apagados (reservados ao M3: 6 respostas A-F + 2 pixels de status).
  *
  * Changelog:
+ *   3.1 - Destravar memória (M2 do plano de migração). Buffers do parser SSE
+ *         4 K -> 16 K: no ESP8266 um evento maior que 4 K era descartado em
+ *         silêncio (o teto existia por falta de RAM). JSON_DOC_SIZE 512 ->
+ *         4096 e REMOÇÃO do filtro do ArduinoJson: o filtro só existia para
+ *         ignorar o explanation (campo mais longo) e caber em 512 bytes; sem
+ *         ele o documento vê o payload inteiro. O parse segue zero-copy
+ *         (contrato char* intacto — strings Linked, pool carrega só a
+ *         estrutura); o uso do pool agora é logado a cada answer ([JSON]
+ *         pool=) para dar visibilidade antes de um eventual NoMemory.
  *   3.0 - Porte para ESP32-S3 Super Mini (M1 do plano de migração),
  *         comportamento idêntico à v2.5 no D1 Mini. Muda só a borda de
  *         hardware: 5 LEDs discretos -> barra WS2812 (FastLED/RMT, GPIO 13),
@@ -93,9 +102,9 @@ WiFiManager wifiManager;
 LedController leds;
 SseClient sse;
 
-// Documento JSON reutilizado (com filtro) + filtro — globais para não pesar
-// na pilha da loopTask.
-StaticJsonDocument<JSON_FILTER_SIZE> g_filter;
+// Documento JSON reutilizado — global para não pesar na pilha da loopTask.
+// Sem filtro desde o M2: com 4096 bytes de pool e parse zero-copy, o payload
+// inteiro (incluindo um eventual explanation) cabe sem descartar nada.
 StaticJsonDocument<JSON_DOC_SIZE> g_doc;
 
 unsigned long g_lastHeapLog = 0;
@@ -109,8 +118,7 @@ unsigned long g_lastHeapLog = 0;
 // reescrito no próximo evento.
 void handleAnswer(char* payload) {
   g_doc.clear();
-  DeserializationError err =
-      deserializeJson(g_doc, payload, DeserializationOption::Filter(g_filter));
+  DeserializationError err = deserializeJson(g_doc, payload);
 
   if (err) {
     // Em vez de falhar em silêncio (que tornava esse tipo de bug invisível),
@@ -124,6 +132,13 @@ void handleAnswer(char* payload) {
   bool hasData = g_doc["hasData"] | false;
   const char* qt = g_doc["questionType"] | "";
   const char* answerText = g_doc["answerText"] | "";
+
+  // Uso do pool: com zero-copy ele carrega só a estrutura, mas é o indicador
+  // de quando JSON_DOC_SIZE precisar crescer (NoMemory viraria showError()).
+  Serial.print(F("[JSON] pool="));
+  Serial.print(g_doc.memoryUsage());
+  Serial.print(F("/"));
+  Serial.println(JSON_DOC_SIZE);
 
   Serial.print(F("[ANSWER] questionType="));
   Serial.print(qt);
@@ -242,8 +257,7 @@ void handleAnswer(char* payload) {
 // só age se o que está no ar é o próprio "processando".
 void handleStatus(char* payload) {
   g_doc.clear();
-  DeserializationError err =
-      deserializeJson(g_doc, payload, DeserializationOption::Filter(g_filter));
+  DeserializationError err = deserializeJson(g_doc, payload);
 
   if (err) {
     // Diferente do answer, um status corrompido NÃO aciona leds.showError():
@@ -298,34 +312,10 @@ void setup() {
   Serial.println(F("\n\n"));
   Serial.println(F("╔═══════════════════════════════════════════════╗"));
   Serial.println(F("║  CertMind - Cliente de Stream ESP32-S3        ║"));
-  Serial.println(F("║  Versão: 3.0 (SSE)                            ║"));
+  Serial.println(F("║  Versão: 3.1 (SSE)                            ║"));
   Serial.println(F("╚═══════════════════════════════════════════════╝"));
 
   leds.begin();
-
-  // Filtro do ArduinoJson: parseia só o necessário (ignora explanation, que
-  // pode ser longa), mantendo o documento pequeno.
-  g_filter["hasData"] = true;
-  g_filter["questionType"] = true;
-  g_filter["letters"] = true;
-  g_filter["flags"] = true;
-  g_filter["slots"] = true;
-  g_filter["slotCount"] = true;
-  g_filter["answerText"] = true;
-  g_filter["cached"] = true;  // resposta veio do cache do servidor (explica latência ~0)
-  // Campos do evento status (o mesmo filtro serve aos dois eventos: chaves que
-  // não existem no payload recebido são simplesmente ignoradas).
-  g_filter["state"] = true;
-  g_filter["activeSolves"] = true;
-  g_filter["reason"] = true;  // causa curta do state=error (timeout, invalid_output, ...)
-
-  // O filtro cresce a cada chave; sem este log, um estouro de JSON_FILTER_SIZE
-  // apareceria como eventos que simplesmente param de acender os LEDs.
-  Serial.print(F("[JSON] filtro: "));
-  Serial.print(g_filter.memoryUsage());
-  Serial.print(F("/"));
-  Serial.print(JSON_FILTER_SIZE);
-  Serial.println(F(" bytes"));
 
   // Conexão WiFi inicial (bloqueante apenas no boot); auto-reconnect cuida do resto.
   wifiManager.connect();

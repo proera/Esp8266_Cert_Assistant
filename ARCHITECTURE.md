@@ -52,7 +52,7 @@ Esp8266_Cert_Assistant/
 │                                                              │
 │  setup():                                                    │
 │    leds.begin()                                              │
-│    monta g_filter (ArduinoJson)                              │
+│    (sem filtro JSON desde a v3.1/M2)                         │
 │    wifiManager.connect()                                     │
 │    sse.begin(handleAnswer, handleStatus)                     │
 │                                                              │
@@ -117,7 +117,7 @@ SseClient::dispatchEvent()              linha em branco = fim do evento
     └── EVT_NONE   → descartado em silêncio
     │
     ▼
-main.cpp: deserializeJson(g_doc, payload, Filter(g_filter))   [zero-copy]
+main.cpp: deserializeJson(g_doc, payload)                     [zero-copy]
     │
     ├─ answer ──┬── questionType == "test"          → leds.showTestChase()
     │           ├── hasData == false                → leds.showError()
@@ -155,8 +155,8 @@ Centraliza **todas** as constantes via `#define`. Nenhuma configuração espalha
 | WiFi | `WIFI_SSID`, `WIFI_PASSWORD`, `WIFI_MAX_RETRY_ATTEMPTS`, `WIFI_RETRY_DELAY_MS` | —, —, 30, 500 ms |
 | Stream | `STREAM_HOST`, `STREAM_PORT`, `STREAM_PATH`, `STREAM_TIMEOUT_MS`, `STREAM_HEAP_LOG_MS` | `192.168.15.38`, 8090, `/api/exam/stream`, 40 s, 10 s |
 | Backoff | `STREAM_BACKOFF_TABLE` | `{1000, 2000, 5000, 10000, 20000, 30000}` ms |
-| Buffers | `SSE_MAX_LINE`, `SSE_MAX_DATA`, `SSE_MAX_CHUNK` | 4096, 4096, 65535 |
-| JSON | `JSON_DOC_SIZE`, `JSON_FILTER_SIZE` | 512, 256 bytes |
+| Buffers | `SSE_MAX_LINE`, `SSE_MAX_DATA`, `SSE_MAX_CHUNK` | 16384, 16384, 65535 |
+| JSON | `JSON_DOC_SIZE` | 4096 bytes (sem filtro desde a v3.1/M2) |
 | Barra de LED | `LED_BAR_PIN`, `LED_BAR_COUNT`, `LED_COUNT`, `LED_BRIGHTNESS`, `LED_MAX_VOLTS`/`LED_MAX_MILLIAMPS`, `LED_COLOR_A`..`LED_COLOR_F` | GPIO 13, 8, 5, 96, 5 V/600 mA, cores do D1 |
 | Conexão / ocioso | `LED_CONN_BLINK_MS`, `LED_IDLE_PERIOD_MS`, `LED_IDLE_PULSE_MS` | 150 ms, 2000 ms, 80 ms |
 | Janela de boot | `LED_BOOT_BLINK_MS` | 300000 ms (5 min) |
@@ -281,16 +281,16 @@ _stepType / _stepLed / _stepCount → buffer da sequência corrente
 
 Responsabilidade: orquestração e parsing JSON.
 
-- **`setup()`** — Serial, LEDs, filtro do ArduinoJson, WiFi e SSE (com os dois callbacks).
+- **`setup()`** — Serial, LEDs, WiFi e SSE (com os dois callbacks).
 - **`loop()`** — `leds.update()`, `sse.loop()`, `leds.setConnected(...)`, log de heap, `yield()`.
 - **`handleAnswer(char* payload)`** — decide o padrão por `hasData` + `questionType`.
 - **`handleStatus(char* payload)`** — decide o padrão por `state`.
 
 **Parsing JSON:**
 
-- `StaticJsonDocument<512>` (`g_doc`) para os dados e `StaticJsonDocument<256>` (`g_filter`) para o
-  filtro — **globais**, para não estourar a pilha do `loop()`.
-- Um único filtro serve aos dois eventos: chaves ausentes no payload são simplesmente ignoradas.
+- `StaticJsonDocument<4096>` (`g_doc`) para os dados — **global**, para não pesar na pilha da
+  loopTask. Sem filtro desde a v3.1 (M2): o payload inteiro é parseado e o uso do pool é logado
+  a cada `answer` (`[JSON] pool=`).
   Ele lista `hasData`, `questionType`, `letters`, `flags`, `slots`, `slotCount`, `answerText`,
   `state` e `activeSolves` — e **omite `explanation`**, o campo mais longo.
 - **Zero-copy** via buffer mutável (`char*`) → ativa o `StringMover` do ArduinoJson (~160/512 bytes
@@ -434,8 +434,8 @@ coisas (era `yield()` no ESP8266).
 | **Cores em hex cru no `Config.h`** | `LED_COLOR_*` como `0xRRGGBB` evita que todo mundo que inclui `Config.h` dependa do FastLED |
 | **De-framing chunked próprio** | O corpo na conexão não é o corpo lógico; sem desmontar, um chunk que termina no meio de uma linha `data:` trunca o payload (v2.3) |
 | **Todo header logado** | Foi a ausência desse log que manteve a falta do de-framing invisível (v2.3) |
-| **Zero-copy JSON** | Buffer mutável (`char*`) ativa o `StringMover` do ArduinoJson (~160/512 bytes vs. ~507/512 com cópia) |
-| **Filtro JSON** | Ignora `explanation` (campo mais longo) para caber em 512 bytes |
+| **Zero-copy JSON** | Buffer mutável (`char*`) ativa o `StringMover` do ArduinoJson — o pool carrega só a estrutura, não as strings |
+| **Sem filtro JSON (v3.1/M2)** | O filtro só existia para ignorar `explanation` e caber nos 512 bytes do 8266; com pool de 4096 o payload inteiro é parseado e o uso é logado (`[JSON] pool=`) |
 | **Erro visível no `answer`** | `showError()` em vez de `return` silencioso — o silêncio era o que escondia bugs (v2.1) |
 | **Erro *invisível* no `status`** | Piscar os 5 LEDs num status corrompido seria lido como "questão ilegível"; fica só no log |
 | **`stopProcessing()` condicional** | O `idle` chega logo após o `answer`; um `allOff()` incondicional apagaria a resposta |

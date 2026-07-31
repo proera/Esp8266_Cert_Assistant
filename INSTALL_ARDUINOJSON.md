@@ -31,8 +31,8 @@ pio pkg outdated       # versões disponíveis
 
 ## Por que 6.x, e não 7.x
 
-O código usa a API do ArduinoJson **6** — `StaticJsonDocument<N>`, `DeserializationOption::Filter`
-e o parse zero-copy via buffer mutável. A 7.x removeu os documentos estáticos em favor de alocação
+O código usa a API do ArduinoJson **6** — `StaticJsonDocument<N>` e o parse zero-copy via buffer
+mutável. A 7.x removeu os documentos estáticos em favor de alocação
 dinâmica, o que muda a assinatura do parse e o orçamento de memória do firmware.
 
 | Versão | Status | Observação |

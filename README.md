@@ -68,7 +68,7 @@ flowchart LR
 | `src/WiFiManager.{h,cpp}` | Conexão WiFi inicial (modo STA) e helpers de status. |
 | `src/SseClient.{h,cpp}` | Abre o `GET`, valida headers, desmonta o `Transfer-Encoding: chunked`, faz o parser SSE linha-a-linha sem bloquear e reconecta com backoff. |
 | `src/LedController.{h,cpp}` | Máquina de estados dos 5 LEDs — todo o tempo medido em `millis()`, nenhum `delay()`. |
-| `src/main.cpp` | Liga os módulos, parseia o JSON (com filtro do ArduinoJson) e decide o padrão. |
+| `src/main.cpp` | Liga os módulos, parseia o JSON (zero-copy) e decide o padrão. |
 
 > Detalhamento interno (diagramas de estado, orçamento de memória, decisões de projeto):
 > **[ARCHITECTURE.md](ARCHITECTURE.md)**. Diretrizes para assistentes de IA: **[CLAUDE.md](CLAUDE.md)**.
@@ -158,7 +158,7 @@ Toda a parametrização fica em **`src/Config.h`**.
 | Resposta retida | `LED_HOLD_TTL_MS`, `LED_HOLD_INTAKE_MS`, `LED_YESNO_BLINK_MS` |
 | Processando | `LED_PROC_INDEX`, `LED_PROC_BLINK_MS` |
 | Teste / erro / sequências | `LED_CHASE_*`, `LED_ERROR_*`, `LED_SEQ_*` |
-| Serial e JSON | `SERIAL_BAUD_RATE`, `JSON_DOC_SIZE`, `JSON_FILTER_SIZE` |
+| Serial e JSON | `SERIAL_BAUD_RATE`, `JSON_DOC_SIZE` |
 
 O `monitor_speed` do `platformio.ini` precisa bater com `SERIAL_BAUD_RATE` (115200).
 
@@ -230,11 +230,11 @@ processamento já traz `solving`.
 | `slots` | int[] | Posições 1–5 por slot (`dropdown` / `ordering` / `matching`) |
 | `slotCount` | int | Nº de afirmações / lacunas / itens |
 | `answerText` | string | Resposta legível (só vai para o log) |
-| `explanation` | string | Justificativa — **ignorada no parse** |
+| `explanation` | string | Justificativa — parseada, ainda sem uso (removida do contrato na v2.0.0 do backend) |
 | `elapsedMilliseconds` | long | Tempo de processamento no servidor |
 
-O firmware lê apenas o necessário: um filtro do ArduinoJson descarta `explanation` (o campo mais
-longo) antes da desserialização.
+Desde a v3.1 (M2) o payload inteiro é desserializado (zero-copy, pool de 4096 bytes) — não há
+mais filtro; o uso do pool é logado a cada `answer` (`[JSON] pool=`).
 
 </details>
 
@@ -360,6 +360,7 @@ O backoff zera quando o stream reabre. Durante a reconexão, os LEDs mostram `�
 
 | Versão | Mudança |
 |:---:|---|
+| **3.1** | Buffers SSE 4 K → 16 K (fim do descarte silencioso de eventos grandes); `JSON_DOC_SIZE` 4096 e remoção do filtro — o payload inteiro é parseado |
 | **3.0** | Porte para **ESP32-S3 Super Mini** + barra WS2812 de 8 LEDs (GPIO 13) — comportamento idêntico à v2.5 |
 | **2.5** | Robustez: timeout na fase de headers (half-open), parse numérico do status HTTP, validação de slots, logs de `cached`/`reason` — último release com alvo ESP8266 |
 | **2.4** | Evento `status` → LED de processamento (`solving` / `idle` / `error`) |

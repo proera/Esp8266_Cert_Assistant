@@ -1,6 +1,7 @@
 # Plano de migração — ESP8266 D1 Mini → ESP32-S3 Super Mini
 
-> **Status: em execução.** M0 e M1 concluídos (validação do M1 em hardware pendente);
+> **Status: em execução.** M0, M1 e M2 concluídos (M1 validado em hardware: stream,
+> ping, heartbeat e test chase ok; restam os padrões de resposta reais e reconexão);
 > decisões da seção 6 fechadas em 31/07/2026. A numeração de marcos vigente é a da
 > seção 6 (a seção 4 mantém a numeração original, anterior às decisões).
 
@@ -191,13 +192,16 @@ Projeto de teste em `C:\Projetos\Esp32S3_SuperMini_Test`, gravado e validado: bo
 - **Aceite:** contra o mesmo backend, os 9 critérios do `README.md` passam com
   comportamento visualmente idêntico ao D1 Mini. *(Pendente: gravar na placa e validar.)*
 
-### M2 — Destravar memória
+### M2 — Destravar memória ✅ *concluído (v3.1)*
 - `SSE_MAX_LINE`/`SSE_MAX_DATA`: 4096 → 16384. Fim do descarte silencioso de evento.
-- `JSON_DOC_SIZE`: 512 → 4096; **remover `g_filter`**.
-- Manter a assinatura `char*` (custa nada e segue correta), mas passar a **copiar
-  explicitamente** com `strlcpy` o que precise sobreviver ao evento.
-- **Aceite:** um payload de 8 KB que hoje seria descartado é processado; log mostra o
-  uso do pool do ArduinoJson com folga.
+- `JSON_DOC_SIZE`: 512 → 4096; **`g_filter` removido**.
+- Assinatura `char*` mantida (custa nada e segue correta); nada no código atual
+  precisa sobreviver ao evento — quando precisar, copiar com `strlcpy`.
+- Uso do pool logado a cada `answer` (`[JSON] pool=`) — visibilidade antes de um
+  eventual `NoMemory`.
+- **Build:** RAM 25,2 % (82 452 B; +27,9 K sobre o M1), Flash 55,6 % — folga ampla.
+- **Aceite:** payloads até ~16 K deixam de ser descartados (teto anterior: 4 K);
+  validar com um solve real observando o `[JSON] pool=` no monitor.
 
 ### M3 — Split dual-core
 Conforme §3.5. **Aceite:** forçar `connect()` a falhar (backend derrubado) e confirmar

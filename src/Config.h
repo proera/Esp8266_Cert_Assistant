@@ -44,9 +44,11 @@
 #define STREAM_BACKOFF_TABLE { 1000UL, 2000UL, 5000UL, 10000UL, 20000UL, 30000UL }
 
 // Tetos de buffer do parser SSE (descarta/reseta se exceder).
-// Folga p/ payloads verbosos (answerText + explanation longos em UTF-8).
-#define SSE_MAX_LINE 4096   // teto por linha recebida
-#define SSE_MAX_DATA 4096   // teto do payload acumulado (campos data:)
+// 16 K (M2): no ESP8266 eram 4 K e um evento maior era descartado EM SILÊNCIO;
+// com 320 K de RAM no S3, 2×16 K de estático custa pouco e acomoda payloads
+// verbosos (answerText + explanation longos em UTF-8) com folga.
+#define SSE_MAX_LINE 16384  // teto por linha recebida
+#define SSE_MAX_DATA 16384  // teto do payload acumulado (campos data:)
 
 // Teto do chunk-size do Transfer-Encoding: chunked. Guarda contra
 // desalinhamento do framing (um hex lido de lixo daria um chunk gigante):
@@ -137,7 +139,10 @@
 // ========================================
 // CONFIGURAÇÕES JSON (ArduinoJson v6)
 // ========================================
-#define JSON_DOC_SIZE 512     // documento filtrado (sem explanation)
-#define JSON_FILTER_SIZE 256  // documento do filtro
+// 4096 (M2): no ESP8266 eram 512 bytes e só cabia com um filtro que descartava
+// o campo mais longo (explanation). Sem filtro, o documento vê o payload
+// inteiro; o parse segue zero-copy (strings Linked no buffer mutável), então o
+// pool carrega essencialmente a estrutura, não as strings.
+#define JSON_DOC_SIZE 4096
 
 #endif // CONFIG_H
