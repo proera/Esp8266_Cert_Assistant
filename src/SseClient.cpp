@@ -5,6 +5,7 @@
  */
 
 #include "SseClient.h"
+#include "ConfigStore.h"
 
 static const unsigned long kBackoffTable[] = STREAM_BACKOFF_TABLE;
 static const uint8_t kBackoffCount = sizeof(kBackoffTable) / sizeof(kBackoffTable[0]);
@@ -77,25 +78,25 @@ void SseClient::loop() {
 // ========================================
 void SseClient::tryConnect() {
   Serial.print(F("[SSE] Conectando a "));
-  Serial.print(STREAM_HOST);
+  Serial.print(config.host());
   Serial.print(':');
-  Serial.print(STREAM_PORT);
-  Serial.println(STREAM_PATH);
+  Serial.print(config.port());
+  Serial.println(config.path());
 
   _client.stop();
 
-  if (!_client.connect(STREAM_HOST, STREAM_PORT)) {
+  if (!_client.connect(config.host(), config.port())) {
     scheduleRetry("falha no connect TCP");
     return;
   }
 
   // Monta o GET HTTP/1.1 manualmente.
   _client.print(F("GET "));
-  _client.print(STREAM_PATH);
+  _client.print(config.path());
   _client.print(F(" HTTP/1.1\r\nHost: "));
-  _client.print(STREAM_HOST);
+  _client.print(config.host());
   _client.print(':');
-  _client.print(STREAM_PORT);
+  _client.print(config.port());
   _client.print(F("\r\nAccept: text/event-stream\r\n"
                   "Connection: keep-alive\r\n"
                   "User-Agent: ESP32S3-CertMind\r\n"));

@@ -1,7 +1,8 @@
 # Plano de migração — ESP8266 D1 Mini → ESP32-S3 Super Mini
 
-> **Status: em execução.** M0–M5 concluídos (validado em hardware: stream, ping,
-> heartbeat, test chase, blackout de boot e reconexão pós-queda do backend);
+> **Status: em execução.** M0–M6 concluídos (validado em hardware: stream, ping,
+> heartbeat, test chase, blackout de boot e reconexão pós-queda do backend); só
+> resta o M7 (TLS), bloqueado pelo backend;
 > decisões da seção 6 fechadas em 31/07/2026. A numeração de marcos vigente é a da
 > seção 6 (a seção 4 mantém a numeração original, anterior às decisões).
 
@@ -314,4 +315,12 @@ ou houver proxy reverso terminando TLS.
   >    maior que `<n>` antes de entrar no fluxo normal.
   > Com isso, um `answer` emitido durante a janela de reconexão do ESP (1–30 s)
   > chega à barra assim que o stream reabre, em vez de se perder.
-- **M6** — OTA + NVS. **M7** — TLS (bloqueado pelo backend).
+- **M6** — OTA + NVS ✅ *concluído (v3.5)*: ArduinoOTA/espota (hostname
+  `certmind-s3.local`, senha em `Config.h`, sinalização visual via fila) e
+  `ConfigStore` em NVS (`Preferences`): ssid/pass/host/port/path com defaults do
+  `Config.h` e CLI na serial (`config` / `config set` / `config clear` / `restart`).
+  Resolve o IP literal do backend: troca de DHCP vira `config set host ...` +
+  `restart`. *(Higiene de segredo apontada no plano segue valendo: a senha do WiFi
+  continua no Config.h e no histórico do git — rotação da senha da rede é a única
+  mitigação real.)*
+- **M7** — TLS (bloqueado pelo backend).

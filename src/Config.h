@@ -15,6 +15,9 @@
 // ========================================
 // CONFIGURAÇÕES WiFi
 // ========================================
+// Desde o M6, SSID/senha (e host/porta/path do stream) são DEFAULTS de
+// primeiro boot: overrides persistidos em NVS (CLI serial: `config set ...`)
+// têm precedência — ver ConfigStore.{h,cpp}.
 #define WIFI_SSID "Sagaz"
 #define WIFI_PASSWORD "Amarelo%4815"
 #define WIFI_MAX_RETRY_ATTEMPTS 30
@@ -146,6 +149,15 @@
 #define LED_HOLD_TTL_MS 12000UL  // tempo que a resposta fica exibida
 #define LED_HOLD_INTAKE_MS 250   // blank de chegada (tudo apagado) no início
 #define LED_YESNO_BLINK_MS 350   // período do piscar do "Não" no yesno
+
+// ========================================
+// OTA (M6) — gravação pela rede via espota/ArduinoOTA
+// ========================================
+// A placa se anuncia por mDNS como <OTA_HOSTNAME>.local. A senha protege
+// contra um flash acidental/indevido vindo da LAN; versionada em texto plano
+// como as demais credenciais (decisão do mantenedor). Vazia = sem senha.
+#define OTA_HOSTNAME "certmind-s3"
+#define OTA_PASSWORD "certmind"
 
 // ========================================
 // CONFIGURAÇÕES SERIAL

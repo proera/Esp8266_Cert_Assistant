@@ -1,7 +1,7 @@
 /*
  * Sistema CertMind - Cliente de Stream ESP32-S3 (Super Mini)
  *
- * Versão: 3.4
+ * Versão: 3.5
  *
  * Descrição: Consome o stream SSE da API CertMind por UMA conexão HTTP
  * persistente (GET, texto claro, sem TLS) e aciona os LEDs da barra WS2812
@@ -19,6 +19,15 @@
  * piscando = solving).
  *
  * Changelog:
+ *   3.5 - OTA + configuração em NVS (M6 do plano de migração). Gravação pela
+ *         rede via ArduinoOTA/espota (hostname certmind-s3.local, senha em
+ *         Config.h; pixel de processamento pisca durante o update, via fila).
+ *         Host/porta/path do stream e credenciais WiFi viram overrides
+ *         persistidos em NVS (ConfigStore/Preferences), com os #define do
+ *         Config.h como default — CLI na serial (`config set host ...` +
+ *         `restart`) resolve uma troca de DHCP do backend sem recompilar.
+ *         Setters só escrevem no NVS (efeito após restart): é o que evita
+ *         corrida entre a CLI (loopTask) e a netTask, que lê os getters.
  *   3.4 - Replay pós-reconexão (M5 do plano de migração, sem o Authorization
  *         — cortado por decisão: tudo roda na rede interna). O id: de cada
  *         evento é rastreado e reenviado como Last-Event-ID no GET seguinte:
@@ -120,8 +129,10 @@
 
 #include <Arduino.h>
 #include <WiFi.h>
+#include <ArduinoOTA.h>
 #include <ArduinoJson.h>
 #include "Config.h"
+#include "ConfigStore.h"
 #include "WiFiManager.h"
 #include "LedController.h"
 #include "SseClient.h"
@@ -407,6 +418,48 @@ void handleStatus(char* payload) {
 }
 
 // ========================================
+// OTA (M6): gravação pela rede, tocada pela netTask
+// ========================================
+// Os callbacks rodam na netTask; a sinalização visual vai pela fila (o pixel
+// de processamento pisca durante o update) — nunca leds.* direto daqui.
+static void setupOta() {
+  ArduinoOTA.setHostname(OTA_HOSTNAME);
+  if (OTA_PASSWORD[0]) {
+    ArduinoOTA.setPassword(OTA_PASSWORD);
+  }
+  ArduinoOTA.onStart([]() {
+    Serial.println(F("[OTA] Iniciando gravação pela rede..."));
+    sendSimpleLedCommand(LED_CMD_PROC_ON);
+  });
+  ArduinoOTA.onEnd([]() {
+    Serial.println(F("[OTA] Gravação concluída — reiniciando"));
+    sendSimpleLedCommand(LED_CMD_PROC_OFF);
+  });
+  ArduinoOTA.onError([](ota_error_t err) {
+    Serial.print(F("[OTA] Erro "));
+    Serial.println((int)err);
+    sendSimpleLedCommand(LED_CMD_PROC_OFF);
+  });
+  ArduinoOTA.onProgress([](unsigned int done, unsigned int total) {
+    // Log a cada ~25% para não afogar a serial durante a transferência.
+    static uint8_t lastQuarter = 0xFF;
+    uint8_t quarter = (uint8_t)((done * 4UL) / total);
+    if (quarter != lastQuarter) {
+      lastQuarter = quarter;
+      Serial.print(F("[OTA] "));
+      Serial.print(quarter * 25);
+      Serial.println(F("%"));
+    }
+  });
+  ArduinoOTA.begin();
+  Serial.print(F("[OTA] Pronto: "));
+  Serial.print(OTA_HOSTNAME);
+  Serial.print(F(".local ("));
+  Serial.print(WiFi.localIP());
+  Serial.println(F(")"));
+}
+
+// ========================================
 // netTask (core 0): WiFi + stream + parse — pode bloquear
 // ========================================
 void netTask(void*) {
@@ -414,6 +467,8 @@ void netTask(void*) {
   // "conectando" já roda na loopTask desde o boot).
   wifiManager.connect();
   WiFi.setAutoReconnect(true);
+
+  setupOta();
 
   sse.begin(handleAnswer, handleStatus);
   Serial.println(F("✓ netTask ativa. Aguardando stream...\n"));
@@ -423,6 +478,7 @@ void netTask(void*) {
   bool lastStreaming = false;
 
   for (;;) {
+    ArduinoOTA.handle();
     sse.loop();
 
     bool streaming = sse.isStreaming();
@@ -439,6 +495,70 @@ void netTask(void*) {
 }
 
 // ========================================
+// CLI da serial (M6): configuração em runtime, persistida em NVS
+// ========================================
+// Roda na loopTask. Comandos:
+//   config                    -> mostra a configuração em uso
+//   config set <chave> <v>    -> persiste override (ssid|pass|host|port|path)
+//   config clear              -> remove todos os overrides
+//   restart                   -> reinicia (aplica o que foi salvo)
+// Overrides valem APÓS o restart (o ConfigStore não toca os valores em uso —
+// é o que evita corrida com a netTask, que lê os getters).
+static void handleSerialCli() {
+  static char buf[128];
+  static size_t len = 0;
+
+  while (Serial.available()) {
+    char c = (char)Serial.read();
+    if (c == '\r') continue;
+    if (c != '\n') {
+      if (len < sizeof(buf) - 1) buf[len++] = c;
+      continue;
+    }
+    buf[len] = '\0';
+    len = 0;
+    if (!buf[0]) continue;
+
+    if (strcmp(buf, "restart") == 0) {
+      Serial.println(F("[CFG] Reiniciando..."));
+      Serial.flush();
+      ESP.restart();
+    }
+
+    if (strcmp(buf, "config") == 0 || strcmp(buf, "config show") == 0) {
+      Serial.println(F("[CFG] Em uso (overrides do NVS valem após restart):"));
+      config.printTo(Serial);
+      continue;
+    }
+
+    if (strcmp(buf, "config clear") == 0) {
+      config.clearAll();
+      Serial.println(F("[CFG] Overrides removidos — defaults do Config.h após restart"));
+      continue;
+    }
+
+    if (strncmp(buf, "config set ", 11) == 0) {
+      char* key = buf + 11;
+      char* sp = strchr(key, ' ');
+      if (sp != nullptr) {
+        *sp = '\0';
+        const char* value = sp + 1;
+        if (config.set(key, value)) {
+          Serial.print(F("[CFG] Salvo: "));
+          Serial.print(key);
+          Serial.println(F(" — use `restart` para aplicar"));
+        } else {
+          Serial.println(F("[CFG] Inválido (chaves: ssid|pass|host|port|path; port 1-65535)"));
+        }
+        continue;
+      }
+    }
+
+    Serial.println(F("[CFG] Comandos: config | config set <chave> <valor> | config clear | restart"));
+  }
+}
+
+// ========================================
 // SETUP
 // ========================================
 void setup() {
@@ -448,10 +568,13 @@ void setup() {
   Serial.println(F("\n\n"));
   Serial.println(F("╔═══════════════════════════════════════════════╗"));
   Serial.println(F("║  CertMind - Cliente de Stream ESP32-S3        ║"));
-  Serial.println(F("║  Versão: 3.4 (SSE)                            ║"));
+  Serial.println(F("║  Versão: 3.5 (SSE)                            ║"));
   Serial.println(F("╚═══════════════════════════════════════════════╝"));
 
   leds.begin();
+
+  // ANTES da netTask: ela consome os getters do config (WiFi + endpoint).
+  config.begin();
 
   g_ledQueue = xQueueCreate(16, sizeof(LedCommand));
 
@@ -477,7 +600,10 @@ void loop() {
   // 2) Avança a animação dos LEDs.
   leds.update();
 
-  // 3) Log periódico do heap (detecção de vazamento).
+  // 3) CLI de configuração pela serial (config / config set / restart).
+  handleSerialCli();
+
+  // 4) Log periódico do heap (detecção de vazamento).
   if (now - g_lastHeapLog > STREAM_HEAP_LOG_MS) {
     g_lastHeapLog = now;
     Serial.print(F("[HEAP] livre="));

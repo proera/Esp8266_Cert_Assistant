@@ -5,6 +5,7 @@
  */
 
 #include "WiFiManager.h"
+#include "ConfigStore.h"
 
 WiFiManager::WiFiManager() {
   // Construtor vazio - usa configurações do Config.h
@@ -13,7 +14,7 @@ WiFiManager::WiFiManager() {
 bool WiFiManager::connect() {
   Serial.println("\n=================================");
   Serial.print("Conectando ao WiFi: ");
-  Serial.println(WIFI_SSID);
+  Serial.println(config.ssid());
   Serial.println("=================================");
 
   WiFi.mode(WIFI_STA);
@@ -21,7 +22,7 @@ bool WiFiManager::connect() {
   // jitter na recepção — inaceitável num stream cuja latência é o ponto do
   // projeto. Não existia equivalente no ESP8266.
   WiFi.setSleep(false);
-  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+  WiFi.begin(config.ssid(), config.pass());
 
   int attempts = 0;
   while (WiFi.status() != WL_CONNECTED && attempts < WIFI_MAX_RETRY_ATTEMPTS) {

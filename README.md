@@ -8,7 +8,7 @@ Uma única conexão HTTP persistente. Zero `delay()` no caminho de renderizaçã
 
 <br>
 
-![Firmware](https://img.shields.io/badge/firmware-v3.4-2ea44f?style=flat-square)
+![Firmware](https://img.shields.io/badge/firmware-v3.5-2ea44f?style=flat-square)
 ![Board](https://img.shields.io/badge/board-ESP32--S3_Super_Mini-E7352C?style=flat-square&logo=espressif&logoColor=white)
 ![Framework](https://img.shields.io/badge/framework-Arduino-00979D?style=flat-square&logo=arduino&logoColor=white)
 ![Build](https://img.shields.io/badge/build-PlatformIO-FF7F00?style=flat-square&logo=platformio&logoColor=white)
@@ -179,6 +179,15 @@ pio run --target upload  # Compila e grava via USB-C (porta fixada em COM6 no pl
 pio device monitor       # Monitor serial (115200 baud)
 pio run --target clean   # Limpa artefatos de build
 ```
+
+**OTA (sem cabo):** descomente o bloco `espota` no `platformio.ini` e o mesmo
+`pio run --target upload` passa a gravar pela rede (`certmind-s3.local`, senha `OTA_PASSWORD`
+do `Config.h`). Durante o update, o pixel de processamento (7) pisca em ciano.
+
+**Configuração em runtime (NVS):** pela serial, `config` mostra os valores em uso;
+`config set host 192.168.15.40` (chaves: `ssid`/`pass`/`host`/`port`/`path`) persiste um
+override que vale após `restart`; `config clear` volta aos defaults do `Config.h`.
+Uma troca de IP do backend se resolve sem recompilar.
 
 Não há testes automatizados — é firmware embarcado, validado em hardware pelo Serial Monitor.
 A serial sai pelo próprio USB-C (USB-Serial/JTAG nativo, sem adaptador). Para capturar o boot
@@ -363,6 +372,7 @@ replay, um `answer` emitido durante a janela de reconexão chega assim que o str
 
 | Versão | Mudança |
 |:---:|---|
+| **3.5** | OTA pela rede (ArduinoOTA/espota) + configuração em NVS com CLI serial (`config set ...`) — atualização e troca de endpoint sem cabo/recompilação |
 | **3.4** | Replay pós-reconexão: `Last-Event-ID` no `GET` + `retry:` do servidor honrado — eventos emitidos durante a reconexão deixam de ser perdidos |
 | **3.3** | Dual-core: rede/parse na `netTask` (core 0), LEDs na uiTask (core 1) — a animação não congela mais durante `connect()`/reconexões |
 | **3.2** | LEDs 6+2: 6ª resposta (F, magenta) + pixels 6–7 dedicados a status (conexão/processamento) — `solving` não apaga mais a resposta em exibição |
