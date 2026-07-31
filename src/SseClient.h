@@ -1,7 +1,7 @@
 /*
  * SseClient.h
  *
- * Cliente SSE (Server-Sent Events) não-bloqueante para ESP8266.
+ * Cliente SSE (Server-Sent Events) não-bloqueante para ESP32-S3.
  *
  * Abre UMA conexão GET HTTP/1.1 (texto claro, sem TLS) contra o endpoint de
  * stream e a mantém viva indefinidamente, lendo eventos incrementalmente.
@@ -25,7 +25,7 @@
 #define SSE_CLIENT_H
 
 #include <Arduino.h>
-#include <ESP8266WiFi.h>
+#include <WiFi.h>
 #include "Config.h"
 
 class SseClient {

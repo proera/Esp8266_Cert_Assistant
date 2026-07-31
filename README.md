@@ -1,15 +1,15 @@
 <div align="center">
 
-# CertMind · ESP8266 Stream Client
+# CertMind · ESP32-S3 Stream Client
 
-**Firmware para D1 Mini que traduz o stream SSE da API CertMind em cinco LEDs.**
+**Firmware para ESP32-S3 Super Mini que traduz o stream SSE da API CertMind numa barra de LED WS2812.**
 
-Uma única conexão HTTP persistente. Zero `delay()`. Zero polling.
+Uma única conexão HTTP persistente. Zero `delay()` no caminho de renderização. Zero polling.
 
 <br>
 
-![Firmware](https://img.shields.io/badge/firmware-v2.4-2ea44f?style=flat-square)
-![Board](https://img.shields.io/badge/board-D1_Mini_(ESP8266)-E7352C?style=flat-square&logo=espressif&logoColor=white)
+![Firmware](https://img.shields.io/badge/firmware-v3.0-2ea44f?style=flat-square)
+![Board](https://img.shields.io/badge/board-ESP32--S3_Super_Mini-E7352C?style=flat-square&logo=espressif&logoColor=white)
 ![Framework](https://img.shields.io/badge/framework-Arduino-00979D?style=flat-square&logo=arduino&logoColor=white)
 ![Build](https://img.shields.io/badge/build-PlatformIO-FF7F00?style=flat-square&logo=platformio&logoColor=white)
 ![ArduinoJson](https://img.shields.io/badge/ArduinoJson-6.21.5-5E97D0?style=flat-square)
@@ -19,7 +19,7 @@ Uma única conexão HTTP persistente. Zero `delay()`. Zero polling.
 
 ---
 
-O ESP8266 é **apenas consumidor**: abre um `GET`, mantém a conexão viva e escuta.
+O ESP32 é **apenas consumidor**: abre um `GET`, mantém a conexão viva e escuta.
 Não faz `POST`, não envia imagem, não faz request/response.
 
 O backend difunde dois eventos — `answer` (a resposta resolvida) e `status` (andamento do
@@ -81,43 +81,47 @@ flowchart LR
 <tr><th align="left">Hardware</th><th align="left">Software</th></tr>
 <tr valign="top"><td>
 
-- 1× **D1 Mini (ESP8266)** ou clone Wemos
-- 5× **LEDs** — verde, amarelo, vermelho, azul, branco
-- 5× **Resistores 220 Ω** (um por LED)
-- Protoboard, jumpers e cabo USB Micro-B
+- 1× **ESP32-S3 Super Mini** (ESP32-S3FH4R2 — 4 MB flash + 2 MB PSRAM)
+- 1× **Barra WS2812 de 8 LEDs** (endereçáveis)
+- Jumpers e cabo USB-C (dados + alimentação)
 
 </td><td>
 
 - **[PlatformIO](https://platformio.org/)** — CLI ou extensão do VS Code
-- A plataforma `espressif8266` e o **ArduinoJson 6.x** são baixados automaticamente a partir do `platformio.ini`
+- A plataforma `espressif32`, o **ArduinoJson 6.x** e o **FastLED** são baixados automaticamente a partir do `platformio.ini`
 
 </td></tr>
 </table>
 
 > [!IMPORTANT]
-> O ESP8266 só opera em redes **2,4 GHz**.
+> O firmware usa a rede em **2,4 GHz** (o rádio WiFi do ESP32-S3 é só 2,4 GHz).
 
 ---
 
 ## Montagem
 
-| LED | Cor | Pino | GPIO | Posição / Letra | Resistor |
-|:---:|-----|:----:|:----:|:---------------:|:--------:|
-| **A** | 🟢 Verde    | `D3` | GPIO0  | 1 | 220 Ω |
-| **B** | 🟡 Amarelo  | `D2` | GPIO4  | 2 | 220 Ω |
-| **C** | 🔴 Vermelho | `D5` | GPIO14 | 3 | 220 Ω |
-| **D** | 🔵 Azul     | `D1` | GPIO5  | 4 | 220 Ω |
-| **E** | ⚪ Branco   | `D7` | GPIO13 | 5 | 220 Ω |
+A barra WS2812 usa **um único pino de dados** (GPIO 13). Cada posição de resposta
+é um pixel da barra, com a cor que o LED físico tinha no D1 Mini:
+
+| Pixel | Cor | Posição / Letra |
+|:---:|-----|:---------------:|
+| **0** | 🟢 Verde    | 1 / A |
+| **1** | 🟡 Amarelo  | 2 / B |
+| **2** | 🔴 Vermelho | 3 / C |
+| **3** | 🔵 Azul     | 4 / D |
+| **4** | ⚪ Branco   | 5 / E |
+| **5–7** | — apagados | reservados (6ª resposta F + 2 pixels de status, no M3) |
 
 ```
-   D1 Mini              Resistor            LED              Comum
-   ─────────            ────────            ─────            ─────
-   D3  (GPIO0)  ──────▶  220 Ω  ──────▶  (+) Verde    (−) ──┐
-   D2  (GPIO4)  ──────▶  220 Ω  ──────▶  (+) Amarelo  (−) ──┤
-   D5  (GPIO14) ──────▶  220 Ω  ──────▶  (+) Vermelho (−) ──┼──▶ GND
-   D1  (GPIO5)  ──────▶  220 Ω  ──────▶  (+) Azul     (−) ──┤
-   D7  (GPIO13) ──────▶  220 Ω  ──────▶  (+) Branco   (−) ──┘
+   ESP32-S3 Super Mini              Barra WS2812 (8 px)
+   ───────────────────              ───────────────────
+   5V  ────────────────────────▶   VCC
+   GPIO 13 ────────────────────▶   DIN   [0][1][2][3][4][5][6][7]
+   GND ────────────────────────▶   GND
 ```
+
+O brilho e o teto de potência ficam em `Config.h` (`LED_BRIGHTNESS`,
+`LED_MAX_MILLIAMPS` — limitado a 600 mA para não derrubar a porta USB).
 
 ---
 
@@ -147,7 +151,7 @@ Toda a parametrização fica em **`src/Config.h`**.
 
 | Grupo | Constantes |
 |---|---|
-| Pinos | `LED_PIN_A` … `LED_PIN_E`, `LED_COUNT` |
+| Barra de LED | `LED_BAR_PIN`, `LED_BAR_COUNT`, `LED_COUNT`, `LED_BRIGHTNESS`, `LED_MAX_*`, `LED_COLOR_A` … `LED_COLOR_F` |
 | Saúde do stream | `STREAM_TIMEOUT_MS`, `STREAM_BACKOFF_TABLE`, `STREAM_HEAP_LOG_MS` |
 | Buffers do parser | `SSE_MAX_LINE`, `SSE_MAX_DATA`, `SSE_MAX_CHUNK` |
 | Conexão / ocioso / boot | `LED_CONN_BLINK_MS`, `LED_IDLE_PERIOD_MS`, `LED_IDLE_PULSE_MS`, `LED_BOOT_BLINK_MS` |
@@ -169,14 +173,16 @@ O `monitor_speed` do `platformio.ini` precisa bater com `SERIAL_BAUD_RATE` (1152
 
 ```bash
 pio run                  # Compila o firmware
-pio run --target upload  # Compila e grava no D1 Mini via USB (auto-detecta a COM)
+pio run --target upload  # Compila e grava via USB-C (porta fixada em COM6 no platformio.ini)
 pio device monitor       # Monitor serial (115200 baud)
 pio run --target clean   # Limpa artefatos de build
 ```
 
 Não há testes automatizados — é firmware embarcado, validado em hardware pelo Serial Monitor.
-Para capturar o boot (que acontece antes de o monitor abrir), force um reset com o monitor já
-conectado (toggle de DTR/RTS via pyserial).
+A serial sai pelo próprio USB-C (USB-Serial/JTAG nativo, sem adaptador). Para capturar o boot
+(que acontece antes de o monitor abrir), force um reset com o monitor já conectado (pulso no
+RTS) — o bootloader ROM do S3 não fala pelo USB-CDC, então as primeiras linhas do ROM não
+aparecem; o log do firmware em si aparece completo.
 
 ---
 
@@ -341,9 +347,10 @@ O backoff zera quando o stream reabre. Durante a reconexão, os LEDs mostram `�
 
 | Sintoma | Provável causa |
 |---|---|
-| WiFi não conecta | SSID/senha incorretos, ou rede em 5 GHz — o ESP8266 só suporta 2,4 GHz |
+| WiFi não conecta | SSID/senha incorretos, ou rede em 5 GHz — o rádio do ESP32-S3 só suporta 2,4 GHz |
 | `[SSE] status HTTP != 200` ou reconexão constante | `STREAM_HOST` / `STREAM_PORT` / `STREAM_PATH` apontando para o lugar errado, ou servidor inacessível na rede |
-| Erro de build (`ESP8266WiFi.h`, `ArduinoJson.h`) | Rode `pio run` — o PlatformIO baixa a plataforma e as dependências automaticamente |
+| Erro de build (`WiFi.h`, `ArduinoJson.h`, `FastLED.h`) | Rode `pio run` — o PlatformIO baixa a plataforma e as dependências automaticamente |
+| Placa reinicia sozinha (reset por `brownout`) | Cabo/fonte USB fraca — o S3 puxa picos bem maiores que o 8266 em TX; o motivo do reset sai no log de boot |
 | LEDs apagados, mas a serial mostra atividade | Janela de boot: são os 5 min de blackout aguardando a 1ª resposta ([detalhes](#janela-de-boot--silêncio-até-a-1ª-resposta)) |
 | `showError()` em toda resposta longa | Payload truncado — verifique `SSE_MAX_LINE` / `SSE_MAX_DATA` e o de-framing chunked |
 
@@ -353,6 +360,8 @@ O backoff zera quando o stream reabre. Durante a reconexão, os LEDs mostram `�
 
 | Versão | Mudança |
 |:---:|---|
+| **3.0** | Porte para **ESP32-S3 Super Mini** + barra WS2812 de 8 LEDs (GPIO 13) — comportamento idêntico à v2.5 |
+| **2.5** | Robustez: timeout na fase de headers (half-open), parse numérico do status HTTP, validação de slots, logs de `cached`/`reason` — último release com alvo ESP8266 |
 | **2.4** | Evento `status` → LED de processamento (`solving` / `idle` / `error`) |
 | **2.3** | De-framing do `Transfer-Encoding: chunked`; todo header de resposta passa a ser logado |
 | **2.2** | Janela de silêncio no boot: LEDs apagados após 5 min, até a 1ª resposta |
@@ -366,8 +375,9 @@ O changelog completo, com o diagnóstico de cada correção, está no topo de **
 
 ## Recursos
 
-- [Documentação do ESP8266 Arduino core](https://arduino-esp8266.readthedocs.io/)
-- [Pinout do D1 Mini](https://randomnerdtutorials.com/esp8266-pinout-reference-gpios/)
+- [Documentação do ESP32 Arduino core](https://docs.espressif.com/projects/arduino-esp32/en/latest/)
+- [ESP32-S3 — datasheet e strapping pins (Espressif)](https://www.espressif.com/en/products/socs/esp32-s3)
+- [FastLED](https://fastled.io/)
 - [ArduinoJson](https://arduinojson.org/)
 - [Especificação SSE (WHATWG)](https://html.spec.whatwg.org/multipage/server-sent-events.html)
 

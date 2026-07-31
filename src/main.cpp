@@ -1,20 +1,30 @@
 /*
- * Sistema CertMind - Cliente de Stream ESP8266 (D1 Mini)
+ * Sistema CertMind - Cliente de Stream ESP32-S3 (Super Mini)
  *
- * Versão: 2.5
+ * Versão: 3.0
  *
  * Descrição: Consome o stream SSE da API CertMind por UMA conexão HTTP
- * persistente (GET, texto claro, sem TLS) e aciona 5 LEDs (A-E) conforme
- * cada situação emitida pelo backend (test, ilegível, single, multiple,
- * yesno, dropdown, ordering, matching), o andamento do processamento no
- * servidor (evento status) e a saúde da conexão.
+ * persistente (GET, texto claro, sem TLS) e aciona os LEDs da barra WS2812
+ * conforme cada situação emitida pelo backend (test, ilegível, single,
+ * multiple, yesno, dropdown, ordering, matching), o andamento do
+ * processamento no servidor (evento status) e a saúde da conexão.
  *
- * O ESP8266 é apenas consumidor: abre o GET e fica escutando. Não faz POST,
+ * O ESP32 é apenas consumidor: abre o GET e fica escutando. Não faz POST,
  * não envia imagem, não faz request/response.
  *
- * Hardware: D1 Mini (ESP8266) + 5 LEDs (posições/letras A-E => 1-5).
+ * Hardware: ESP32-S3 Super Mini (FH4R2) + barra WS2812 de 8 pixels no
+ * GPIO 13. Pixels 0-4 = posições/letras A-E => 1-5, com as cores dos LEDs
+ * físicos do D1 Mini (verde/amarelo/vermelho/azul/branco); pixels 5-7
+ * apagados (reservados ao M3: 6 respostas A-F + 2 pixels de status).
  *
  * Changelog:
+ *   3.0 - Porte para ESP32-S3 Super Mini (M1 do plano de migração),
+ *         comportamento idêntico à v2.5 no D1 Mini. Muda só a borda de
+ *         hardware: 5 LEDs discretos -> barra WS2812 (FastLED/RMT, GPIO 13),
+ *         ESP8266WiFi -> WiFi.h com WiFi.setSleep(false) (modem sleep do
+ *         ESP32 injetaria jitter no stream), yield() -> delay(1) (sob
+ *         FreeRTOS o yield() não alimenta o WDT nem cede o tick). Buffers,
+ *         filtro JSON e contrato zero-copy (char*) intactos.
  *   2.5 - Robustez do SSE e do answer (validação em hardware pendente):
  *         teto próprio p/ a fase de headers (HEADERS_TIMEOUT_MS) — um half-open
  *         (servidor aceita o TCP e nunca responde) prendia o firmware em
@@ -69,7 +79,7 @@
  */
 
 #include <Arduino.h>
-#include <ESP8266WiFi.h>
+#include <WiFi.h>
 #include <ArduinoJson.h>
 #include "Config.h"
 #include "WiFiManager.h"
@@ -83,8 +93,8 @@ WiFiManager wifiManager;
 LedController leds;
 SseClient sse;
 
-// Documento JSON reutilizado (com filtro) + filtro — globais para não estourar
-// a pilha do loop() do ESP8266.
+// Documento JSON reutilizado (com filtro) + filtro — globais para não pesar
+// na pilha da loopTask.
 StaticJsonDocument<JSON_FILTER_SIZE> g_filter;
 StaticJsonDocument<JSON_DOC_SIZE> g_doc;
 
@@ -287,8 +297,8 @@ void setup() {
 
   Serial.println(F("\n\n"));
   Serial.println(F("╔═══════════════════════════════════════════════╗"));
-  Serial.println(F("║  CertMind - Cliente de Stream ESP8266         ║"));
-  Serial.println(F("║  Versão: 2.5 (SSE)                            ║"));
+  Serial.println(F("║  CertMind - Cliente de Stream ESP32-S3        ║"));
+  Serial.println(F("║  Versão: 3.0 (SSE)                            ║"));
   Serial.println(F("╚═══════════════════════════════════════════════╝"));
 
   leds.begin();
@@ -348,5 +358,7 @@ void loop() {
     Serial.println(ESP.getFreeHeap());
   }
 
-  yield();  // alimenta o watchdog
+  // Sob FreeRTOS, yield() não alimenta o WDT nem cede o tick — delay(1) faz
+  // as duas coisas (e dá ao IDLE task a chance de rodar).
+  delay(1);
 }

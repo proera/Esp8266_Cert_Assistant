@@ -17,6 +17,10 @@ bool WiFiManager::connect() {
   Serial.println("=================================");
 
   WiFi.mode(WIFI_STA);
+  // O ESP32 liga modem sleep por padrão, injetando dezenas a centenas de ms de
+  // jitter na recepção — inaceitável num stream cuja latência é o ponto do
+  // projeto. Não existia equivalente no ESP8266.
+  WiFi.setSleep(false);
   WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
 
   int attempts = 0;

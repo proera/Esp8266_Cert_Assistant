@@ -1,19 +1,21 @@
-# ARCHITECTURE.md — CertMind ESP8266 Client
+# ARCHITECTURE.md — CertMind ESP32-S3 Client
 
 Documento de arquitetura interna. Para instalação, montagem e comportamento dos LEDs, veja o
 **[README.md](README.md)**.
 
 ## 1. Visão Geral
 
-Firmware **PlatformIO** para **ESP8266 (D1 Mini)** que consome um stream **SSE** (Server-Sent Events)
-da API CertMind e aciona **5 LEDs** conforme cada situação emitida pelo backend.
+Firmware **PlatformIO** para **ESP32-S3 Super Mini** que consome um stream **SSE** (Server-Sent Events)
+da API CertMind e aciona os pixels de uma **barra WS2812 de 8 LEDs** (GPIO 13) conforme cada
+situação emitida pelo backend. No M1 do porte, apenas os pixels 0–4 (posições A–E) são usados —
+comportamento idêntico ao firmware v2.5 do D1 Mini.
 
 | | |
 |---|---|
-| **Plataforma** | ESP8266 (D1 Mini) — framework Arduino |
-| **Versão** | 2.4 |
-| **Environment** | `[env:d1_mini]` |
-| **Dependências** | ArduinoJson `^6.21.5` (única lib externa) |
+| **Plataforma** | ESP32-S3 Super Mini (ESP32-S3FH4R2: 4 MB flash quad + 2 MB PSRAM quad) — framework Arduino |
+| **Versão** | 3.0 |
+| **Environment** | `[env:esp32s3_supermini]` (board `esp32-s3-devkitc-1` com overrides de flash/PSRAM) |
+| **Dependências** | ArduinoJson `^6.21.5`, FastLED `3.9.13` |
 | **Protocolo** | HTTP/1.1 GET → SSE (texto claro, sem TLS) |
 | **Transporte do corpo** | `Transfer-Encoding: chunked` (Kestrel), desmontado no firmware |
 | **Eventos consumidos** | `answer` (resposta resolvida), `status` (andamento do processamento) |
@@ -29,9 +31,9 @@ Esp8266_Cert_Assistant/
 ├── src/
 │   ├── Config.h                # Constantes centralizadas (#define)
 │   ├── main.cpp                # Orquestrador: setup(), loop(), handleAnswer(), handleStatus()
-│   ├── WiFiManager.h/.cpp      # Conexão WiFi (modo STA)
+│   ├── WiFiManager.h/.cpp      # Conexão WiFi (modo STA, modem sleep desligado)
 │   ├── SseClient.h/.cpp        # Cliente SSE: TCP, de-framing chunked, parser, reconexão
-│   └── LedController.h/.cpp    # Máquina de estados dos LEDs (não-bloqueante)
+│   └── LedController.h/.cpp    # Máquina de estados dos LEDs (não-bloqueante, saída FastLED/WS2812)
 ├── platformio.ini              # Configuração PlatformIO
 ├── ARCHITECTURE.md             # Este documento
 ├── README.md                   # Documentação de uso do projeto
@@ -155,7 +157,7 @@ Centraliza **todas** as constantes via `#define`. Nenhuma configuração espalha
 | Backoff | `STREAM_BACKOFF_TABLE` | `{1000, 2000, 5000, 10000, 20000, 30000}` ms |
 | Buffers | `SSE_MAX_LINE`, `SSE_MAX_DATA`, `SSE_MAX_CHUNK` | 4096, 4096, 65535 |
 | JSON | `JSON_DOC_SIZE`, `JSON_FILTER_SIZE` | 512, 256 bytes |
-| Pinos | `LED_PIN_A`..`LED_PIN_E`, `LED_COUNT` | D3, D2, D5, D1, D7 · 5 |
+| Barra de LED | `LED_BAR_PIN`, `LED_BAR_COUNT`, `LED_COUNT`, `LED_BRIGHTNESS`, `LED_MAX_VOLTS`/`LED_MAX_MILLIAMPS`, `LED_COLOR_A`..`LED_COLOR_F` | GPIO 13, 8, 5, 96, 5 V/600 mA, cores do D1 |
 | Conexão / ocioso | `LED_CONN_BLINK_MS`, `LED_IDLE_PERIOD_MS`, `LED_IDLE_PULSE_MS` | 150 ms, 2000 ms, 80 ms |
 | Janela de boot | `LED_BOOT_BLINK_MS` | 300000 ms (5 min) |
 | HOLD | `LED_HOLD_TTL_MS`, `LED_HOLD_INTAKE_MS`, `LED_YESNO_BLINK_MS` | 12000 ms, 250 ms, 350 ms |
@@ -380,20 +382,29 @@ processamento já traz `solving` — é assim que o estado ressincroniza.
 
 ## 7. Mapeamento de Pinos
 
-| GPIO | Pino D1 Mini | Cor | Função |
-|---|---|---|---|
-| GPIO0  | D3 | Verde    | LED A (posição 1) |
-| GPIO4  | D2 | Amarelo  | LED B (posição 2) |
-| GPIO14 | D5 | Vermelho | LED C (posição 3) — também o LED de "processando" |
-| GPIO5  | D1 | Azul     | LED D (posição 4) |
-| GPIO13 | D7 | Branco   | LED E (posição 5) |
+Um único pino de dados: **GPIO 13 → DIN da barra WS2812 de 8 pixels** (FastLED sobre RMT,
+ordem de cor GRB). O mapeamento lógico fica nos pixels:
+
+| Pixel | Cor (`LED_COLOR_*`) | Função |
+|---|---|---|
+| 0 | Verde    | LED A (posição 1) |
+| 1 | Amarelo  | LED B (posição 2) |
+| 2 | Vermelho | LED C (posição 3) — também o LED de "processando" |
+| 3 | Azul     | LED D (posição 4) |
+| 4 | Branco   | LED E (posição 5) |
+| 5–7 | — | Apagados; reservados ao M3 (posição F = magenta + 2 pixels de status) |
+
+Pinos a **evitar** no S3 em expansões futuras: GPIO 0 (strapping/BOOT), 19–20 (USB D-/D+),
+26–32 (flash SPI), 45–46 (strapping), 48 (WS2812 onboard).
 
 ---
 
 ## 8. Temporização e Non-Blocking
 
-Todo o firmware opera sem `delay()` (exceto um `delay(100)` único no `setup()`, antes de qualquer
-animação, para a Serial subir).
+Todo o caminho de renderização opera sem `delay()`. As exceções são deliberadas: um `delay(100)`
+único no `setup()` (para a Serial subir) e o tick de `delay(1)` no fim do `loop()` e entre linhas
+do parser — sob FreeRTOS, `yield()` não alimenta o WDT nem cede o tick; `delay(1)` faz as duas
+coisas (era `yield()` no ESP8266).
 
 | Evento | Duração | Descrição |
 |---|---|---|
@@ -417,7 +428,10 @@ animação, para a Serial subir).
 | Decisão | Motivação |
 |---|---|
 | **Sem `HTTPClient`** | Bloqueia esperando o corpo terminar — incompatível com stream SSE infinito |
-| **Sem `WiFiClientSecure`** | TLS no ESP8266 consome RAM demais; o backend é local |
+| **Sem `WiFiClientSecure`** | O backend não tem HTTPS; TLS é o M7 do plano de migração (bloqueado pelo backend) |
+| **`WiFi.setSleep(false)`** | O modem sleep do ESP32 (ligado por padrão) injeta dezenas a centenas de ms de jitter na recepção do stream |
+| **`FastLED.show()` só quando a máscara muda** | O `update()` roda a cada iteração do loop; retransmitir o barramento WS2812 continuamente seria desperdício |
+| **Cores em hex cru no `Config.h`** | `LED_COLOR_*` como `0xRRGGBB` evita que todo mundo que inclui `Config.h` dependa do FastLED |
 | **De-framing chunked próprio** | O corpo na conexão não é o corpo lógico; sem desmontar, um chunk que termina no meio de uma linha `data:` trunca o payload (v2.3) |
 | **Todo header logado** | Foi a ausência desse log que manteve a falta do de-framing invisível (v2.3) |
 | **Zero-copy JSON** | Buffer mutável (`char*`) ativa o `StringMover` do ArduinoJson (~160/512 bytes vs. ~507/512 com cópia) |
@@ -437,13 +451,14 @@ animação, para a Serial subir).
 
 1. **NÃO alterar as credenciais WiFi** — ficam versionadas por decisão do mantenedor.
 2. **NÃO usar `HTTPClient`** — quebra o stream SSE.
-3. **NÃO usar `WiFiClientSecure`** — consome RAM demais.
+3. **NÃO usar `WiFiClientSecure`** — o backend não tem HTTPS; TLS é o M7 do plano.
 4. **NÃO mudar `AnswerCallback` para `const char*`** — quebra o zero-copy e estoura o documento JSON.
 5. **NÃO remover a camada de de-framing chunked** — o payload volta a truncar de forma intermitente.
 6. **NÃO reduzir o log de headers** de volta a "só a linha de status".
 7. **NÃO trocar `stopProcessing()` por um `allOff()` incondicional** — apaga a resposta recém-exibida.
-8. **NÃO adicionar `delay()`** — quebra o comportamento não-bloqueante.
-9. ESP8266 opera apenas em WiFi **2,4 GHz**.
+8. **NÃO adicionar `delay()` no caminho de renderização** — os `delay(1)` do loop/parser são o
+   tick do FreeRTOS (ex-`yield()`) e **não** devem voltar a ser `yield()`.
+9. O rádio do ESP32-S3 opera apenas em WiFi **2,4 GHz**.
 10. `monitor_speed` no `platformio.ini` deve bater com `SERIAL_BAUD_RATE` (115200).
 
 ---

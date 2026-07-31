@@ -1,7 +1,10 @@
 /*
  * LedController.h
  *
- * Máquina de estados não-bloqueante dos 5 LEDs (A-E / posições 1-5).
+ * Máquina de estados não-bloqueante das 5 posições de resposta (A-E / 1-5),
+ * exibidas nos pixels 0-4 da barra WS2812 (FastLED sobre RMT). Os pixels 5-7
+ * ficam apagados até o M3 (6 respostas A-F + 2 pixels de status). Cada posição
+ * tem a cor do LED físico que ocupava no D1 Mini (LED_COLOR_* no Config.h).
  *
  * Não há LED de status dedicado: a saúde da conexão e as respostas do
  * backend compartilham os mesmos 5 LEDs, com padrões que não se confundem.
@@ -32,6 +35,7 @@
 #define LED_CONTROLLER_H
 
 #include <Arduino.h>
+#include <FastLED.h>
 #include "Config.h"
 
 class LedController {
@@ -68,7 +72,14 @@ class LedController {
     // Tipo de passo numa sequência.
     enum StepType { STEP_SOLID, STEP_BLINK, STEP_BLINK5 };
 
-    uint8_t _pins[LED_COUNT];
+    // Framebuffer da barra inteira (o FastLED transmite os 8 pixels; só os
+    // LED_COUNT primeiros carregam resposta no M1).
+    CRGB _bar[LED_BAR_COUNT];
+    // Última máscara efetivamente transmitida: writeMask() só chama
+    // FastLED.show() quando ela muda (update() roda a cada iteração do loop e
+    // reescrever o barramento WS2812 continuamente seria puro desperdício).
+    // 0xFF = "nunca escreveu" (força a 1ª transmissão, inclusive do allOff()).
+    uint8_t _lastMask = 0xFF;
 
     bool _answerActive = false;   // false => exibe padrão de conexão/ocioso
     bool _connected = false;      // saúde do stream (quando !_answerActive)

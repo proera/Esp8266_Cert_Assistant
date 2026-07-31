@@ -1,7 +1,11 @@
 /*
  * LedController.cpp
  *
- * Implementação da máquina de estados dos 5 LEDs.
+ * Implementação da máquina de estados das 5 posições de resposta.
+ *
+ * A máquina de estados é a mesma do D1 Mini (v2.x); só a borda de saída mudou:
+ * writeMask() escreve num framebuffer CRGB e transmite via FastLED/RMT, em vez
+ * de digitalWrite em 5 GPIOs.
  */
 
 #include "LedController.h"
@@ -9,16 +13,21 @@
 #define BIT(i) (1u << (i))
 #define ALL_LEDS_MASK ((1u << LED_COUNT) - 1u)
 
-void LedController::begin() {
-  _pins[0] = LED_PIN_A;
-  _pins[1] = LED_PIN_B;
-  _pins[2] = LED_PIN_C;
-  _pins[3] = LED_PIN_D;
-  _pins[4] = LED_PIN_E;
+// Cor de cada posição de resposta (A-E), na ordem dos pixels 0..LED_COUNT-1.
+static const CRGB kPosColor[LED_COUNT] = {
+  CRGB(LED_COLOR_A), CRGB(LED_COLOR_B), CRGB(LED_COLOR_C),
+  CRGB(LED_COLOR_D), CRGB(LED_COLOR_E),
+};
 
-  for (uint8_t i = 0; i < LED_COUNT; i++) {
-    pinMode(_pins[i], OUTPUT);
-  }
+void LedController::begin() {
+  FastLED.addLeds<WS2812B, LED_BAR_PIN, GRB>(_bar, LED_BAR_COUNT);
+  FastLED.setBrightness(LED_BRIGHTNESS);
+  // Teto de potência: um pico (ex.: erro = tudo aceso) acima disso derrubaria
+  // a porta USB. O FastLED escala o brilho do frame inteiro para caber no teto.
+  FastLED.setMaxPowerInVoltsAndMilliamps(LED_MAX_VOLTS, LED_MAX_MILLIAMPS);
+
+  fill_solid(_bar, LED_BAR_COUNT, CRGB::Black);
+  _lastMask = 0xFF;  // força a 1ª transmissão
   allOff();
 
   _answerActive = false;
@@ -32,9 +41,16 @@ void LedController::begin() {
 // Saída de baixo nível
 // ========================================
 void LedController::writeMask(uint8_t mask) {
-  for (uint8_t i = 0; i < LED_COUNT; i++) {
-    digitalWrite(_pins[i], (mask & BIT(i)) ? HIGH : LOW);
+  if (mask == _lastMask) {
+    return;  // nada mudou: não retransmite o barramento WS2812
   }
+  _lastMask = mask;
+
+  for (uint8_t i = 0; i < LED_COUNT; i++) {
+    _bar[i] = (mask & BIT(i)) ? kPosColor[i] : CRGB::Black;
+  }
+  // Pixels além de LED_COUNT ficam pretos desde o begin(); nada os altera.
+  FastLED.show();
 }
 
 void LedController::allOff() {

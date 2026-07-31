@@ -54,16 +54,32 @@
 #define SSE_MAX_CHUNK 65535UL
 
 // ========================================
-// CONFIGURAÇÕES DE PINOS DOS LEDs
+// CONFIGURAÇÕES DA BARRA DE LED (WS2812)
 // ========================================
-// 5 LEDs no total, mapeados às posições/letras: A=1, B=2, C=3, D=4, E=5.
-#define LED_PIN_A D3  // GPIO0  - LED Verde   (Posição 1 / Letra A)
-#define LED_PIN_B D2  // GPIO4  - LED Amarelo (Posição 2 / Letra B)
-#define LED_PIN_C D5  // GPIO14 - LED Vermelho(Posição 3 / Letra C)
-#define LED_PIN_D D1  // GPIO5  - LED Azul    (Posição 4 / Letra D)
-#define LED_PIN_E D7  // GPIO13 - LED Branco  (Posição 5 / Letra E)
+// Barra WS2812 de 8 pixels no GPIO 13 (FastLED sobre RMT), substituindo os
+// 5 LEDs discretos do D1 Mini. No M1 apenas os pixels 0-4 são usados (posições
+// A-E, comportamento idêntico ao D1); os pixels 5-7 ficam apagados até o M3
+// (6 respostas A-F + 2 pixels de status).
+#define LED_BAR_PIN 13
+#define LED_BAR_COUNT 8
 
-#define LED_COUNT 5
+#define LED_COUNT 5  // posições de resposta em uso (A=1 .. E=5); vira 6 no M3
+
+// Brilho global (0-255) e teto de potência do FastLED. O limite de 5 V/600 mA
+// foi o validado no projeto de teste do M0 — 8 pixels em branco cheio puxariam
+// ~480 mA e um pico acima disso pode derrubar a porta USB.
+#define LED_BRIGHTNESS 96
+#define LED_MAX_VOLTS 5
+#define LED_MAX_MILLIAMPS 600
+
+// Cor de cada posição (0xRRGGBB), reproduzindo os LEDs físicos do D1 Mini.
+// Hex cru (e não CRGB::) para o Config.h não depender do FastLED.
+#define LED_COLOR_A 0x00FF00  // Verde    (Posição 1 / Letra A)
+#define LED_COLOR_B 0xFFFF00  // Amarelo  (Posição 2 / Letra B)
+#define LED_COLOR_C 0xFF0000  // Vermelho (Posição 3 / Letra C)
+#define LED_COLOR_D 0x0000FF  // Azul     (Posição 4 / Letra D)
+#define LED_COLOR_E 0xFFFFFF  // Branco   (Posição 5 / Letra E)
+#define LED_COLOR_F 0xFF00FF  // Magenta  (Posição 6 / Letra F — reservado ao M3)
 
 // ========================================
 // TIMINGS DOS PADRÕES DE LED (ms)

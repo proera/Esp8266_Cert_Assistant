@@ -98,7 +98,7 @@ void SseClient::tryConnect() {
   _client.print(STREAM_PORT);
   _client.print(F("\r\nAccept: text/event-stream\r\n"
                   "Connection: keep-alive\r\n"
-                  "User-Agent: ESP8266-CertMind\r\n\r\n"));
+                  "User-Agent: ESP32S3-CertMind\r\n\r\n"));
 
   // Prepara a fase de leitura de headers.
   _state = ST_HEADERS;
@@ -207,7 +207,9 @@ void SseClient::feedLine(char c, bool headerPhase) {
     processSseLine(_lineBuf, len);
   }
 
-  yield();  // alimenta o watchdog entre linhas
+  // Sob FreeRTOS (ESP32), yield() vira vPortYield() e NÃO alimenta o WDT nem
+  // cede o tick a tasks de prioridade igual/menor; delay(1) faz as duas coisas.
+  delay(1);  // alimenta o watchdog entre linhas
 }
 
 // ========================================

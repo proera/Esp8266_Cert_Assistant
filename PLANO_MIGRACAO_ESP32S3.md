@@ -1,7 +1,8 @@
 # Plano de migração — ESP8266 D1 Mini → ESP32-S3 Super Mini
 
-> **Status: rascunho para avaliação.** Nada implementado. Este documento existe para
-> decidir *se* e *como* portar; não é um commit de trabalho.
+> **Status: em execução.** M0 e M1 concluídos (validação do M1 em hardware pendente);
+> decisões da seção 6 fechadas em 31/07/2026. A numeração de marcos vigente é a da
+> seção 6 (a seção 4 mantém a numeração original, anterior às decisões).
 
 ---
 
@@ -181,11 +182,14 @@ Projeto de teste em `C:\Projetos\Esp32S3_SuperMini_Test`, gravado e validado: bo
 (`qio_qspi` + `-DBOARD_HAS_PSRAM`), serial pelo USB-C
 (`-DARDUINO_USB_CDC_ON_BOOT=1`). Chip, flash, PSRAM e RGB confirmados em hardware.
 
-### M1 — Porte mecânico, comportamento idêntico
-- Novo env, `WiFi.h`, mapa de pinos seguro, `yield()` → tick de task, `setSleep(false)`.
+### M1 — Porte mecânico, comportamento idêntico ✅ *código concluído (v3.0); validação em hardware pendente*
+- Novo env `esp32s3_supermini`, `WiFi.h`, barra WS2812 no GPIO 13 (pixels 0–4 = A–E
+  com as cores do D1, pixels 5–7 apagados), `yield()` → `delay(1)`, `setSleep(false)`.
 - Buffers, tetos, filtro JSON e contrato `char*` **sem alteração**.
+- **Build registrado:** RAM 16,7 % (54 588 / 327 680 B) — contra 46,9 % (38 412 / 81 920 B)
+  no 8266; Flash 55,7 % (729 745 / 1 310 720 B) no slot de app com OTA disponível.
 - **Aceite:** contra o mesmo backend, os 9 critérios do `README.md` passam com
-  comportamento visualmente idêntico ao D1 Mini. Registrar RAM/Flash do build.
+  comportamento visualmente idêntico ao D1 Mini. *(Pendente: gravar na placa e validar.)*
 
 ### M2 — Destravar memória
 - `SSE_MAX_LINE`/`SSE_MAX_DATA`: 4096 → 16384. Fim do descarte silencioso de evento.
@@ -199,12 +203,13 @@ Projeto de teste em `C:\Projetos\Esp32S3_SuperMini_Test`, gravado e validado: bo
 Conforme §3.5. **Aceite:** forçar `connect()` a falhar (backend derrubado) e confirmar
 que a animação de "reconectando" **não engasga** — hoje ela congela por ~5 s.
 
-### M4 — RGB onboard assume o status
-Hoje há um compromisso documentado: *"Não há LED de status dedicado: a saúde da
-conexão e as respostas compartilham os mesmos 5 LEDs"*. Com o WS2812 no GPIO 48
-carregando conexão/processamento em **cor**, os 5 LEDs passam a significar
-**só a resposta** — e a escada de prioridades de `LedController.h:9-21` simplifica.
-Ganho de legibilidade que o hardware antigo não permitia.
+### M4 — RGB onboard assume o status *(superado pela decisão 2 da seção 6)*
+A ideia original era o WS2812 onboard (GPIO 48) carregar conexão/processamento em cor.
+Com a barra de 8 pixels no GPIO 13, o mesmo objetivo é atingido melhor: **2 pixels da
+própria barra** viram status e sobra espaço para a **6ª posição de resposta (F)** —
+é o novo M3 da seção 6. O compromisso documentado (*"a saúde da conexão e as respostas
+compartilham os mesmos 5 LEDs"*) cai do mesmo jeito, e a escada de prioridades de
+`LedController.h` simplifica.
 
 ### M5 — Robustez (dois bugs reais + protocolo)
 - **Travamento indefinido em `ST_HEADERS`**: `checkTimeout()` só é chamado no ramo
