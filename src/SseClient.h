@@ -104,7 +104,8 @@ class SseClient {
     void processHeaderLine(const char* line, size_t len);
     void processSseLine(const char* line, size_t len);
     void dispatchEvent();
-    void checkTimeout();
+    // Teto por fase: headers e stream têm limites diferentes (ver Config.h).
+    void checkTimeout(unsigned long limitMs, const char* reason);
 };
 
 #endif // SSE_CLIENT_H

@@ -1,7 +1,7 @@
 /*
  * Sistema CertMind - Cliente de Stream ESP8266 (D1 Mini)
  *
- * Versão: 2.4
+ * Versão: 2.5
  *
  * Descrição: Consome o stream SSE da API CertMind por UMA conexão HTTP
  * persistente (GET, texto claro, sem TLS) e aciona 5 LEDs (A-E) conforme
@@ -15,6 +15,15 @@
  * Hardware: D1 Mini (ESP8266) + 5 LEDs (posições/letras A-E => 1-5).
  *
  * Changelog:
+ *   2.5 - Robustez do SSE e do answer (validação em hardware pendente):
+ *         teto próprio p/ a fase de headers (HEADERS_TIMEOUT_MS) — um half-open
+ *         (servidor aceita o TCP e nunca responde) prendia o firmware em
+ *         ST_HEADERS para sempre; parse numérico do status HTTP (a
+ *         reason-phrase é opcional na RFC 7230 e um "HTTP/1.1 200" seco era
+ *         rejeitado); validação de faixa dos slots antes do estreitamento a
+ *         uint8_t (257 virava posição 1); log de "cached" (resposta do cache do
+ *         servidor) e de "reason" (causa do status error); log do uso do
+ *         filtro JSON no boot. Último release com alvo ESP8266/D1 Mini.
  *   2.4 - Evento "status" (LED de processamento). O servidor difunde
  *         status {"state":"solving"} antes de chamar a IA, answer ao terminar e
  *         status {"state":"idle"} em seguida (ou status {"state":"error"} se o
@@ -112,7 +121,11 @@ void handleAnswer(char* payload) {
   Serial.print(hasData ? F("true") : F("false"));
   Serial.print(F(" answerText=\""));
   Serial.print(answerText);
-  Serial.println(F("\""));
+  Serial.print(F("\""));
+  if (g_doc["cached"] | false) {
+    Serial.print(F(" (cache do servidor)"));
+  }
+  Serial.println();
 
   // 1) test => varredura de conectividade (não é resposta real).
   if (strcmp(qt, "test") == 0) {
@@ -184,7 +197,16 @@ void handleAnswer(char* payload) {
     uint8_t n = 0;
     for (JsonVariant v : slotsArr) {
       if (n >= LED_COUNT) break;
-      slots[n++] = (uint8_t)(v.as<int>());
+      // Validar ANTES de estreitar: (uint8_t)257 vira 1 e seria exibido como a
+      // posição 1, com toda a confiança, em vez de sinalizar dado inválido.
+      // Fora da faixa vira 0, que showSlots() já trata como slot inválido.
+      const int raw = v.as<int>();
+      const bool inRange = (raw >= 0 && raw <= 255);
+      if (!inRange) {
+        Serial.print(F("[ANSWER] slot fora da faixa: "));
+        Serial.println(raw);
+      }
+      slots[n++] = inRange ? (uint8_t)raw : 0;
     }
     if (slotCount > LED_COUNT) {
       Serial.print(F("[ANSWER] slots com slotCount="));
@@ -237,7 +259,17 @@ void handleStatus(char* payload) {
   }
 
   if (strcmp(state, "error") == 0) {
-    Serial.println(F("[STATUS] falha no processamento -> erro (5 LEDs piscando)"));
+    // O backend manda a causa em "reason" (timeout, invalid_output,
+    // upstream_error, internal_error). Sem isto o erro só piscava os 5 LEDs e a
+    // serial não dizia por quê.
+    const char* reason = g_doc["reason"] | "";
+    Serial.print(F("[STATUS] falha no processamento"));
+    if (reason[0]) {
+      Serial.print(F(" (reason="));
+      Serial.print(reason);
+      Serial.print(F(")"));
+    }
+    Serial.println(F(" -> erro (5 LEDs piscando)"));
     leds.showError();
     return;
   }
@@ -256,7 +288,7 @@ void setup() {
   Serial.println(F("\n\n"));
   Serial.println(F("╔═══════════════════════════════════════════════╗"));
   Serial.println(F("║  CertMind - Cliente de Stream ESP8266         ║"));
-  Serial.println(F("║  Versão: 2.4 (SSE)                            ║"));
+  Serial.println(F("║  Versão: 2.5 (SSE)                            ║"));
   Serial.println(F("╚═══════════════════════════════════════════════╝"));
 
   leds.begin();
@@ -270,10 +302,20 @@ void setup() {
   g_filter["slots"] = true;
   g_filter["slotCount"] = true;
   g_filter["answerText"] = true;
+  g_filter["cached"] = true;  // resposta veio do cache do servidor (explica latência ~0)
   // Campos do evento status (o mesmo filtro serve aos dois eventos: chaves que
   // não existem no payload recebido são simplesmente ignoradas).
   g_filter["state"] = true;
   g_filter["activeSolves"] = true;
+  g_filter["reason"] = true;  // causa curta do state=error (timeout, invalid_output, ...)
+
+  // O filtro cresce a cada chave; sem este log, um estouro de JSON_FILTER_SIZE
+  // apareceria como eventos que simplesmente param de acender os LEDs.
+  Serial.print(F("[JSON] filtro: "));
+  Serial.print(g_filter.memoryUsage());
+  Serial.print(F("/"));
+  Serial.print(JSON_FILTER_SIZE);
+  Serial.println(F(" bytes"));
 
   // Conexão WiFi inicial (bloqueante apenas no boot); auto-reconnect cuida do resto.
   wifiManager.connect();

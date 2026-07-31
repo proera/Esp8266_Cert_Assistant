@@ -33,6 +33,13 @@
 #define STREAM_TIMEOUT_MS 40000UL   // sem nenhuma linha por > ~40s (>2x ping de 15s) => reconecta
 #define STREAM_HEAP_LOG_MS 10000UL  // intervalo de log do heap livre
 
+// Teto próprio para a fase de headers. Num half-open (o servidor aceita o TCP e
+// nunca responde, sem FIN), _client.connected() segue true e o firmware ficaria
+// preso em ST_HEADERS indefinidamente, com os LEDs em "conectando" para sempre.
+// Headers de um backend na LAN chegam em milissegundos: 10s já é folga enorme, e
+// bem mais curto que o teto do stream (que precisa acomodar o ping de 15s).
+#define HEADERS_TIMEOUT_MS 10000UL
+
 // Backoff progressivo de reconexão (ms): 1s -> 2s -> 5s -> 10s -> 20s -> 30s (máx)
 #define STREAM_BACKOFF_TABLE { 1000UL, 2000UL, 5000UL, 10000UL, 20000UL, 30000UL }
 

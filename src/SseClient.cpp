@@ -47,8 +47,15 @@ void SseClient::loop() {
 
     case ST_HEADERS:
       pump(true);
-      if (_state == ST_HEADERS && !_client.connected() && !_client.available()) {
-        scheduleRetry("socket fechou durante headers");
+      if (_state == ST_HEADERS) {
+        if (!_client.connected() && !_client.available()) {
+          scheduleRetry("socket fechou durante headers");
+        } else {
+          // Sem este teto, um half-open (socket aberto, servidor mudo) prendia o
+          // firmware aqui para sempre: connected() nunca fica false e nenhum
+          // retry era agendado.
+          checkTimeout(HEADERS_TIMEOUT_MS, "timeout esperando headers");
+        }
       }
       break;
 
@@ -58,7 +65,7 @@ void SseClient::loop() {
         if (!_client.connected() && !_client.available()) {
           scheduleRetry("socket fechou");
         } else {
-          checkTimeout();
+          checkTimeout(STREAM_TIMEOUT_MS, "timeout sem dados");
         }
       }
       break;
@@ -136,9 +143,9 @@ void SseClient::resetBackoff() {
   _backoffIdx = 0;
 }
 
-void SseClient::checkTimeout() {
-  if (millis() - _lastActivity > STREAM_TIMEOUT_MS) {
-    scheduleRetry("timeout sem dados");
+void SseClient::checkTimeout(unsigned long limitMs, const char* reason) {
+  if (millis() - _lastActivity > limitMs) {
+    scheduleRetry(reason);
   }
 }
 
@@ -320,7 +327,11 @@ void SseClient::processHeaderLine(const char* line, size_t len) {
   Serial.println(line);
 
   if (strncmp(line, "HTTP/", 5) == 0) {
-    _statusOk = (strstr(line, " 200 ") != nullptr) || containsCI(line, "200 OK");
+    // Extrai o código numérico em vez de procurar por " 200 " / "200 OK": a
+    // reason-phrase é opcional na RFC 7230, e um "HTTP/1.1 200" seco falhava nos
+    // dois testes -> retry num 200 legítimo. atoi() ignora o espaço à esquerda.
+    const char* sp = strchr(line, ' ');
+    _statusOk = (sp != nullptr) && (atoi(sp + 1) == 200);
   } else if (containsCI(line, "content-type") && containsCI(line, "text/event-stream")) {
     _ctEventStream = true;
   } else if (containsCI(line, "transfer-encoding") && containsCI(line, "chunked")) {
