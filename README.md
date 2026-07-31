@@ -8,7 +8,7 @@ Uma única conexão HTTP persistente. Zero `delay()` no caminho de renderizaçã
 
 <br>
 
-![Firmware](https://img.shields.io/badge/firmware-v3.3-2ea44f?style=flat-square)
+![Firmware](https://img.shields.io/badge/firmware-v3.4-2ea44f?style=flat-square)
 ![Board](https://img.shields.io/badge/board-ESP32--S3_Super_Mini-E7352C?style=flat-square&logo=espressif&logoColor=white)
 ![Framework](https://img.shields.io/badge/framework-Arduino-00979D?style=flat-square&logo=arduino&logoColor=white)
 ![Build](https://img.shields.io/badge/build-PlatformIO-FF7F00?style=flat-square&logo=platformio&logoColor=white)
@@ -321,6 +321,11 @@ Reconecta se **(a)** o socket cair, **(b)** o WiFi cair, ou **(c)** passar `STRE
 
 O backoff zera quando o stream reabre. Durante a reconexão, o pixel de conexão (6) pisca em âmbar.
 
+Desde a v3.4, a reconexão também tenta **recuperar o que foi perdido**: o `id:` de cada evento é
+rastreado e reenviado como header `Last-Event-ID` no `GET` seguinte — se o servidor suportar
+replay, um `answer` emitido durante a janela de reconexão chega assim que o stream reabre. Um
+`retry:` ditado pelo servidor é honrado no 1º degrau do backoff (faixa sã: 250 ms – 60 s).
+
 ---
 
 ## Testes / critérios de aceite
@@ -358,6 +363,7 @@ O backoff zera quando o stream reabre. Durante a reconexão, o pixel de conexão
 
 | Versão | Mudança |
 |:---:|---|
+| **3.4** | Replay pós-reconexão: `Last-Event-ID` no `GET` + `retry:` do servidor honrado — eventos emitidos durante a reconexão deixam de ser perdidos |
 | **3.3** | Dual-core: rede/parse na `netTask` (core 0), LEDs na uiTask (core 1) — a animação não congela mais durante `connect()`/reconexões |
 | **3.2** | LEDs 6+2: 6ª resposta (F, magenta) + pixels 6–7 dedicados a status (conexão/processamento) — `solving` não apaga mais a resposta em exibição |
 | **3.1** | Buffers SSE 4 K → 16 K (fim do descarte silencioso de eventos grandes); `JSON_DOC_SIZE` 4096 e remoção do filtro — o payload inteiro é parseado |

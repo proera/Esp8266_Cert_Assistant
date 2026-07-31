@@ -98,7 +98,17 @@ void SseClient::tryConnect() {
   _client.print(STREAM_PORT);
   _client.print(F("\r\nAccept: text/event-stream\r\n"
                   "Connection: keep-alive\r\n"
-                  "User-Agent: ESP32S3-CertMind\r\n\r\n"));
+                  "User-Agent: ESP32S3-CertMind\r\n"));
+  if (_lastEventId[0]) {
+    // Pede o replay do que foi emitido durante a janela de reconexão (se o
+    // servidor suportar; caso contrário o header é inócuo).
+    Serial.print(F("[SSE] > Last-Event-ID: "));
+    Serial.println(_lastEventId);
+    _client.print(F("Last-Event-ID: "));
+    _client.print(_lastEventId);
+    _client.print(F("\r\n"));
+  }
+  _client.print(F("\r\n"));
 
   // Prepara a fase de leitura de headers.
   _state = ST_HEADERS;
@@ -114,7 +124,12 @@ void SseClient::tryConnect() {
 }
 
 void SseClient::scheduleRetry(const char* reason) {
-  unsigned long wait = kBackoffTable[_backoffIdx];
+  // O retry: do servidor vale para o 1º degrau (queda de um stream saudável);
+  // falhas consecutivas seguem escalando pela tabela — se o servidor está
+  // fora do ar, o valor dele não é mais confiável que o backoff.
+  unsigned long wait = (_backoffIdx == 0 && _serverRetryMs > 0)
+                           ? _serverRetryMs
+                           : kBackoffTable[_backoffIdx];
   Serial.print(F("[SSE] Reconectando em "));
   Serial.print(wait / 1000.0, 1);
   Serial.print(F("s ("));
@@ -401,7 +416,38 @@ void SseClient::processSseLine(const char* line, size_t len) {
     return;
   }
 
-  // Outros campos (id:, retry:, ...) são ignorados.
+  if ((v = skipFieldPrefix(line, "id:")) != nullptr) {
+    // Rastreado imediatamente (spec SSE), não no dispatch: um id: vale para a
+    // conexão, mesmo que o evento em si seja descartado. id: vazio reseta.
+    if (strlen(v) < SSE_MAX_EVENT_ID) {
+      strlcpy(_lastEventId, v, SSE_MAX_EVENT_ID);
+    } else {
+      Serial.println(F("[SSE] id: excedeu o teto — mantendo o anterior"));
+    }
+    return;
+  }
+
+  if ((v = skipFieldPrefix(line, "retry:")) != nullptr) {
+    // Servidor dita o intervalo de reconexão (ms). Fora da faixa sã, ignora:
+    // um retry: 0 martelaria o backend, um gigante pareceria stream morto.
+    char* end = nullptr;
+    unsigned long ms = strtoul(v, &end, 10);
+    if (end != v && *end == '\0' && ms >= SSE_RETRY_MIN_MS && ms <= SSE_RETRY_MAX_MS) {
+      if (ms != _serverRetryMs) {
+        _serverRetryMs = ms;
+        Serial.print(F("[SSE] retry: servidor pediu "));
+        Serial.print(ms);
+        Serial.println(F(" ms para reconexões"));
+      }
+    } else {
+      Serial.print(F("[SSE] retry: fora da faixa — ignorado ("));
+      Serial.print(v);
+      Serial.println(F(")"));
+    }
+    return;
+  }
+
+  // Outros campos são ignorados.
 }
 
 void SseClient::dispatchEvent() {

@@ -13,7 +13,7 @@ situação emitida pelo backend. Dois canais independentes desde a v3.2: pixels 
 | | |
 |---|---|
 | **Plataforma** | ESP32-S3 Super Mini (ESP32-S3FH4R2: 4 MB flash quad + 2 MB PSRAM quad) — framework Arduino |
-| **Versão** | 3.2 |
+| **Versão** | 3.4 |
 | **Environment** | `[env:esp32s3_supermini]` (board `esp32-s3-devkitc-1` com overrides de flash/PSRAM) |
 | **Dependências** | ArduinoJson `^6.21.5`, FastLED `3.9.13` |
 | **Protocolo** | HTTP/1.1 GET → SSE (texto claro, sem TLS) |
@@ -465,6 +465,7 @@ coisas (era `yield()` no ESP8266).
 | **Dual-core com fila por valor (v3.3)** | O que bloqueia (connect TCP ~5 s, WiFi 15 s, Serial) mora na netTask/core 0; a animação roda na loopTask/core 1 e nunca engasga. Comandos por valor + LedController exclusivo da loopTask = zero mutex |
 | **Todo `millis()`** | Responsividade máxima; a uiTask roda num tick de 5 ms |
 | **Backoff progressivo** | Evita martelar o backend com reconexões imediatas |
+| **Replay pós-reconexão (v3.4)** | `id:` rastreado → `Last-Event-ID` no GET seguinte (eventos da janela de reconexão deixam de ser perdidos, se o servidor suportar); `retry:` do servidor honrado no 1º degrau do backoff, com faixa sã de 250 ms–60 s |
 
 ---
 

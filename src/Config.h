@@ -55,6 +55,13 @@
 // acima disso o parser assume dessincronização e reabre o stream.
 #define SSE_MAX_CHUNK 65535UL
 
+// Replay pós-reconexão (M5): teto do id: rastreado (GUIDs têm 36 chars) e
+// faixa sã para o retry: ditado pelo servidor — fora dela o valor é ignorado
+// (um retry: 0 martelaria o backend; um retry: gigante pareceria stream morto).
+#define SSE_MAX_EVENT_ID 64
+#define SSE_RETRY_MIN_MS 250UL
+#define SSE_RETRY_MAX_MS 60000UL
+
 // ========================================
 // CONFIGURAÇÕES DA BARRA DE LED (WS2812)
 // ========================================

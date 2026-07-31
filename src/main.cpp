@@ -1,7 +1,7 @@
 /*
  * Sistema CertMind - Cliente de Stream ESP32-S3 (Super Mini)
  *
- * Versão: 3.3
+ * Versão: 3.4
  *
  * Descrição: Consome o stream SSE da API CertMind por UMA conexão HTTP
  * persistente (GET, texto claro, sem TLS) e aciona os LEDs da barra WS2812
@@ -19,6 +19,15 @@
  * piscando = solving).
  *
  * Changelog:
+ *   3.4 - Replay pós-reconexão (M5 do plano de migração, sem o Authorization
+ *         — cortado por decisão: tudo roda na rede interna). O id: de cada
+ *         evento é rastreado e reenviado como Last-Event-ID no GET seguinte:
+ *         se o servidor suportar replay, os eventos emitidos durante a janela
+ *         de reconexão (1-30 s de backoff) deixam de ser perdidos — antes,
+ *         id:/retry: eram ignorados e um answer emitido com o stream caído
+ *         nunca chegava à barra. O retry: do servidor passa a ser honrado no
+ *         1º degrau do backoff (falhas consecutivas seguem a tabela), com
+ *         faixa sã de 250 ms a 60 s.
  *   3.3 - Split dual-core (M4 do plano de migração). A rede (WiFi + sse.loop
  *         + parse do JSON) sai da loopTask e vai para a netTask, pinada no
  *         core 0 — os pontos que bloqueiam (connect() TCP de até ~5 s,
@@ -439,7 +448,7 @@ void setup() {
   Serial.println(F("\n\n"));
   Serial.println(F("╔═══════════════════════════════════════════════╗"));
   Serial.println(F("║  CertMind - Cliente de Stream ESP32-S3        ║"));
-  Serial.println(F("║  Versão: 3.3 (SSE)                            ║"));
+  Serial.println(F("║  Versão: 3.4 (SSE)                            ║"));
   Serial.println(F("╚═══════════════════════════════════════════════╝"));
 
   leds.begin();

@@ -18,7 +18,10 @@
  * descartados em silêncio.
  *
  * Reconecta automaticamente com backoff progressivo se o socket cair, o WiFi
- * cair, ou nenhuma linha chegar dentro de STREAM_TIMEOUT_MS.
+ * cair, ou nenhuma linha chegar dentro de STREAM_TIMEOUT_MS. Rastreia o id:
+ * dos eventos e reenvia Last-Event-ID no GET seguinte (replay do que foi
+ * emitido durante a janela de reconexão, se o servidor suportar); honra o
+ * retry: do servidor no 1º degrau do backoff.
  */
 
 #ifndef SSE_CLIENT_H
@@ -91,6 +94,16 @@ class SseClient {
     EventType _evtType = EVT_NONE;
     char _dataBuf[SSE_MAX_DATA];
     size_t _dataLen = 0;
+
+    // Replay pós-reconexão (M5). O id: de cada evento é rastreado e reenviado
+    // como header Last-Event-ID no próximo GET — se o servidor suportar replay,
+    // os eventos emitidos durante a janela de reconexão (1-30 s de backoff)
+    // deixam de ser perdidos. Sobrevive à reconexão de propósito: NÃO limpar
+    // em closeConnection()/tryConnect(). Vazio = nunca visto/resetado.
+    char _lastEventId[SSE_MAX_EVENT_ID] = {0};
+    // retry: ditado pelo servidor (0 = nunca visto). Vale para o 1º degrau do
+    // backoff; falhas consecutivas seguem escalando pela tabela.
+    unsigned long _serverRetryMs = 0;
 
     void tryConnect();
     void scheduleRetry(const char* reason);

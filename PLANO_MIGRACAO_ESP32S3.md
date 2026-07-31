@@ -1,7 +1,7 @@
 # Plano de migração — ESP8266 D1 Mini → ESP32-S3 Super Mini
 
-> **Status: em execução.** M0–M4 concluídos (M1 validado em hardware: stream, ping,
-> heartbeat e test chase ok; restam os padrões de resposta reais e reconexão);
+> **Status: em execução.** M0–M5 concluídos (validado em hardware: stream, ping,
+> heartbeat, test chase, blackout de boot e reconexão pós-queda do backend);
 > decisões da seção 6 fechadas em 31/07/2026. A numeração de marcos vigente é a da
 > seção 6 (a seção 4 mantém a numeração original, anterior às decisões).
 
@@ -293,7 +293,13 @@ ou houver proxy reverso terminando TLS.
   desde o boot (o `wifiManager.connect()` não segura mais o `setup()`).
   *(Aceite formal pendente: derrubar o backend e conferir que a animação de
   reconexão não engasga durante o `connect()` de ~5 s.)*
-- **M5** — robustez restante: `Last-Event-ID` + `retry:`, header `Authorization`.
+- **M5** — robustez restante ✅ *concluído (v3.4)*: `id:` rastreado + `Last-Event-ID`
+  no GET seguinte (replay da janela de reconexão, se o servidor suportar) e `retry:`
+  do servidor honrado no 1º degrau do backoff (faixa sã 250 ms–60 s).
+  **Header `Authorization` cortado por decisão (31/07/2026):** tudo roda na rede
+  interna; o risco financeiro real é o `POST /solve` (lado do backend) e, sem TLS,
+  um token em claro seria meia-proteção. Se o cenário mudar (rede compartilhada /
+  exposição externa), reavaliar começando pelo backend.
   *(O timeout de headers half-open e o parse numérico do status HTTP, da lista
   original do M5, já entraram na v2.5 do firmware 8266, antes do porte.)*
 - **M6** — OTA + NVS. **M7** — TLS (bloqueado pelo backend).
