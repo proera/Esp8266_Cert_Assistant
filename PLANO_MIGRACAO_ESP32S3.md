@@ -302,4 +302,16 @@ ou houver proxy reverso terminando TLS.
   exposição externa), reavaliar começando pelo backend.
   *(O timeout de headers half-open e o parse numérico do status HTTP, da lista
   original do M5, já entraram na v2.5 do firmware 8266, antes do porte.)*
+
+  > **Melhoria futura no backend (CertMind) — replay de eventos.** O firmware
+  > v3.4 já rastreia `id:` e reenvia `Last-Event-ID`, mas o backend hoje **não
+  > emite `id:`** (verificado por sondagem do stream em 31/07/2026), então o
+  > replay fica dormente. Para ativar, o endpoint `/api/exam/stream` precisa de:
+  > 1. Emitir `id: <n>` em cada evento `answer`/`status` (contador monotônico
+  >    em memória basta — não precisa sobreviver a restart do container).
+  > 2. Manter um buffer circular curto dos últimos eventos (ex.: 16).
+  > 3. Ao receber um GET com `Last-Event-ID: <n>`, reemitir os eventos com id
+  >    maior que `<n>` antes de entrar no fluxo normal.
+  > Com isso, um `answer` emitido durante a janela de reconexão do ESP (1–30 s)
+  > chega à barra assim que o stream reabre, em vez de se perder.
 - **M6** — OTA + NVS. **M7** — TLS (bloqueado pelo backend).
