@@ -4,7 +4,8 @@
 
 **Firmware para ESP32-S3 Super Mini que traduz o stream SSE da API CertMind numa barra WS2812: 6 respostas (A–F) + 2 pixels de status.**
 
-Uma única conexão HTTP persistente. Zero `delay()` no caminho de renderização. Zero polling.
+Uma única conexão HTTP persistente. Dois núcleos — a animação nunca engasga.
+Zero `delay()` no caminho de renderização. Zero polling. Zero cabo para atualizar.
 
 <br>
 
@@ -13,7 +14,9 @@ Uma única conexão HTTP persistente. Zero `delay()` no caminho de renderizaçã
 ![Framework](https://img.shields.io/badge/framework-Arduino-00979D?style=flat-square&logo=arduino&logoColor=white)
 ![Build](https://img.shields.io/badge/build-PlatformIO-FF7F00?style=flat-square&logo=platformio&logoColor=white)
 ![ArduinoJson](https://img.shields.io/badge/ArduinoJson-6.21.5-5E97D0?style=flat-square)
+![FastLED](https://img.shields.io/badge/FastLED-3.9.13-D4A017?style=flat-square)
 ![Transporte](https://img.shields.io/badge/transporte-SSE_sobre_HTTP-757575?style=flat-square)
+![OTA](https://img.shields.io/badge/OTA-espota-8A2BE2?style=flat-square)
 
 </div>
 
@@ -48,27 +51,39 @@ pio run --target upload && pio device monitor
 
 Projeto **PlatformIO** com ambiente único `[env:esp32s3_supermini]` e uma responsabilidade por arquivo.
 
+O trabalho é dividido entre os **dois núcleos** do S3: tudo que pode bloquear (rede, parse)
+mora na `netTask`; a barra é animada pela `uiTask` num tick de 5 ms — ligadas por uma fila de
+comandos **por valor**. É por isso que a animação não congela nem durante um `connect()` de 5 s.
+
 ```mermaid
 flowchart LR
     API["<b>Backend CertMind</b><br/>GET /api/exam/stream<br/>text/event-stream"]
-    SSE["<b>SseClient</b><br/>de-framing chunked<br/>parser SSE não-bloqueante<br/>reconexão com backoff"]
-    MAIN["<b>main.cpp</b><br/>handleAnswer()<br/>handleStatus()"]
-    LED["<b>LedController</b><br/>máquina de estados<br/>100% millis()"]
+
+    subgraph core0 ["netTask · core 0 — pode bloquear"]
+        SSE["<b>SseClient</b><br/>de-framing chunked<br/>parser SSE não-bloqueante<br/>reconexão + Last-Event-ID"]
+        MAIN["<b>handleAnswer()</b><br/><b>handleStatus()</b><br/>+ ArduinoOTA"]
+    end
+
+    subgraph core1 ["uiTask · core 1 — nunca bloqueia"]
+        LED["<b>LedController</b><br/>máquina de estados<br/>100% millis()"]
+    end
+
     OUT(["Barra WS2812: A–F + status"])
 
     API -->|"event: answer<br/>event: status"| SSE
     SSE --> MAIN
-    MAIN --> LED
+    MAIN -->|"fila de LedCommand<br/>(por valor)"| LED
     LED --> OUT
 ```
 
 | Módulo | Responsabilidade |
 |---|---|
-| `src/Config.h` | Toda a parametrização via `#define`: WiFi, endpoint, barra de LED, timings dos padrões, backoff, tetos de buffer. |
+| `src/Config.h` | Toda a parametrização via `#define`: WiFi, endpoint, barra de LED, timings dos padrões, backoff, tetos de buffer, OTA. |
+| `src/ConfigStore.{h,cpp}` | Configuração persistente em **NVS**: overrides de WiFi/endpoint por cima dos defaults do `Config.h`, ajustáveis pela CLI serial. |
 | `src/WiFiManager.{h,cpp}` | Conexão WiFi inicial (modo STA, modem sleep desligado) e helpers de status. |
-| `src/SseClient.{h,cpp}` | Abre o `GET`, valida headers, desmonta o `Transfer-Encoding: chunked`, faz o parser SSE linha-a-linha sem bloquear e reconecta com backoff. |
+| `src/SseClient.{h,cpp}` | Abre o `GET`, valida headers, desmonta o `Transfer-Encoding: chunked`, faz o parser SSE linha-a-linha sem bloquear, reconecta com backoff e pede replay via `Last-Event-ID`. |
 | `src/LedController.{h,cpp}` | Máquina de estados da barra (6 respostas + 2 status) — todo o tempo medido em `millis()`, nenhum `delay()`. |
-| `src/main.cpp` | Liga os módulos e divide o trabalho entre os 2 núcleos: rede/parse na `netTask` (core 0), LEDs na `loop()`/uiTask (core 1), unidas por uma fila de comandos por valor. |
+| `src/main.cpp` | Liga os módulos e divide o trabalho entre os 2 núcleos: rede/parse/OTA na `netTask` (core 0), LEDs + CLI serial na `loop()`/uiTask (core 1), unidas por uma fila de comandos por valor. |
 
 > Detalhamento interno (diagramas de estado, orçamento de memória, decisões de projeto):
 > **[ARCHITECTURE.md](ARCHITECTURE.md)**. Diretrizes para assistentes de IA: **[CLAUDE.md](CLAUDE.md)**.
@@ -129,9 +144,12 @@ O brilho e o teto de potência ficam em `Config.h` (`LED_BRIGHTNESS`,
 
 ## Configuração
 
-Toda a parametrização fica em **`src/Config.h`**.
+Toda a parametrização fica em **`src/Config.h`** — e, desde a v3.5, WiFi e endpoint são
+**defaults**: overrides persistidos em NVS (via CLI serial, [veja abaixo](#build-upload-e-monitor))
+têm precedência e sobrevivem a reboot.
 
-**Endpoint do stream** — HTTP puro, sem TLS. Em dev local, basta trocar host/porta:
+**Endpoint do stream** — HTTP puro, sem TLS. Em dev local, basta trocar host/porta
+(ou, com a placa já gravada, `config set host ...` pela serial — sem recompilar):
 
 ```cpp
 #define STREAM_HOST "192.168.15.38"
@@ -154,12 +172,14 @@ Toda a parametrização fica em **`src/Config.h`**.
 | Grupo | Constantes |
 |---|---|
 | Barra de LED | `LED_BAR_PIN`, `LED_BAR_COUNT`, `LED_COUNT`, `LED_BRIGHTNESS`, `LED_MAX_*`, `LED_COLOR_A` … `LED_COLOR_F` |
-| Saúde do stream | `STREAM_TIMEOUT_MS`, `STREAM_BACKOFF_TABLE`, `STREAM_HEAP_LOG_MS` |
-| Buffers do parser | `SSE_MAX_LINE`, `SSE_MAX_DATA`, `SSE_MAX_CHUNK` |
+| Pixels de status | `LED_PIX_STATUS_CONN`, `LED_PIX_STATUS_PROC`, `LED_COLOR_STATUS_*` |
+| Saúde do stream | `STREAM_TIMEOUT_MS`, `HEADERS_TIMEOUT_MS`, `STREAM_BACKOFF_TABLE`, `STREAM_HEAP_LOG_MS` |
+| Buffers do parser | `SSE_MAX_LINE`, `SSE_MAX_DATA`, `SSE_MAX_CHUNK`, `SSE_MAX_EVENT_ID`, `SSE_RETRY_MIN/MAX_MS` |
 | Conexão / ocioso / boot | `LED_CONN_BLINK_MS`, `LED_IDLE_PERIOD_MS`, `LED_IDLE_PULSE_MS`, `LED_BOOT_BLINK_MS` |
 | Resposta retida | `LED_HOLD_TTL_MS`, `LED_HOLD_INTAKE_MS`, `LED_YESNO_BLINK_MS` |
-| Processando | `LED_PROC_INDEX`, `LED_PROC_BLINK_MS` |
+| Processando | `LED_PROC_BLINK_MS` |
 | Teste / erro / sequências | `LED_CHASE_*`, `LED_ERROR_*`, `LED_SEQ_*` |
+| OTA | `OTA_HOSTNAME`, `OTA_PASSWORD` |
 | Serial e JSON | `SERIAL_BAUD_RATE`, `JSON_DOC_SIZE` |
 
 O `monitor_speed` do `platformio.ini` precisa bater com `SERIAL_BAUD_RATE` (115200).
@@ -236,9 +256,9 @@ processamento já traz `solving`.
 |---|---|---|
 | `hasData` | bool | `true` se a questão foi lida; `false` se ilegível ou modo Test |
 | `questionType` | string | `single`, `multiple`, `yesno`, `dropdown`, `ordering`, `matching` ou `test` |
-| `letters` | string[] | Letras A–E (`single` / `multiple`) |
+| `letters` | string[] | Letras A–F (`single` / `multiple`) |
 | `flags` | bool[] | Sim/Não por afirmação (`yesno`) |
-| `slots` | int[] | Posições 1–5 por slot (`dropdown` / `ordering` / `matching`) |
+| `slots` | int[] | Posições 1–6 por slot (`dropdown` / `ordering` / `matching`) |
 | `slotCount` | int | Nº de afirmações / lacunas / itens |
 | `answerText` | string | Resposta legível (só vai para o log) |
 | `explanation` | string | Justificativa — parseada, ainda sem uso (removida do contrato na v2.0.0 do backend) |
@@ -360,7 +380,7 @@ replay, um `answer` emitido durante a janela de reconexão chega assim que o str
 | Sintoma | Provável causa |
 |---|---|
 | WiFi não conecta | SSID/senha incorretos, ou rede em 5 GHz — o rádio do ESP32-S3 só suporta 2,4 GHz |
-| `[SSE] status HTTP != 200` ou reconexão constante | `STREAM_HOST` / `STREAM_PORT` / `STREAM_PATH` apontando para o lugar errado, ou servidor inacessível na rede |
+| `[SSE] status HTTP != 200` ou reconexão constante | Endpoint apontando para o lugar errado (confira com `config` na serial e corrija com `config set host ...`), ou servidor inacessível na rede |
 | Erro de build (`WiFi.h`, `ArduinoJson.h`, `FastLED.h`) | Rode `pio run` — o PlatformIO baixa a plataforma e as dependências automaticamente |
 | Placa reinicia sozinha (reset por `brownout`) | Cabo/fonte USB fraca — o S3 puxa picos bem maiores que o 8266 em TX; o motivo do reset sai no log de boot |
 | LEDs apagados, mas a serial mostra atividade | Janela de boot: são os 5 min de blackout aguardando a 1ª resposta ([detalhes](#janela-de-boot--silêncio-até-a-1ª-resposta)) |
@@ -393,6 +413,7 @@ O changelog completo, com o diagnóstico de cada correção, está no topo de **
 ## Recursos
 
 - [Documentação do ESP32 Arduino core](https://docs.espressif.com/projects/arduino-esp32/en/latest/)
+- [ArduinoOTA / espota](https://docs.espressif.com/projects/arduino-esp32/en/latest/ota_web_update.html)
 - [ESP32-S3 — datasheet e strapping pins (Espressif)](https://www.espressif.com/en/products/socs/esp32-s3)
 - [FastLED](https://fastled.io/)
 - [ArduinoJson](https://arduinojson.org/)
