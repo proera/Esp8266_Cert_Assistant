@@ -1,7 +1,7 @@
 # Plano de migração — ESP8266 D1 Mini → ESP32-S3 Super Mini
 
-> **Status: em execução.** M0, M1 e M2 concluídos (M1 validado em hardware: stream,
-> ping, heartbeat e test chase ok; restam os padrões de resposta reais e reconexão);
+> **Status: em execução.** M0–M3 concluídos (M1 validado em hardware: stream, ping,
+> heartbeat e test chase ok; restam os padrões de resposta reais e reconexão);
 > decisões da seção 6 fechadas em 31/07/2026. A numeração de marcos vigente é a da
 > seção 6 (a seção 4 mantém a numeração original, anterior às decisões).
 
@@ -280,10 +280,12 @@ ou houver proxy reverso terminando TLS.
 
 - **M1** — porte mecânico (comportamento idêntico; 5 posições nos pixels 0–4).
 - **M2** — destravar memória (buffers 16 K, `JSON_DOC_SIZE` 4096, sem filtro).
-- **M3** — LEDs 6+2: `LED_COUNT` 5→6, letras A–F, F=magenta, pixels 6–7 assumem
-  conexão/processamento. A escada de prioridades simplifica: `stopProcessing()` e o
-  aborto por queda de stream são revistos porque status deixa de disputar pixel com
-  resposta.
+- **M3** — LEDs 6+2 ✅ *concluído (v3.2)*: `LED_COUNT` 5→6, letras A–F, F=magenta,
+  pixel 6 = conexão (âmbar piscando / pulso verde) e pixel 7 = processamento (ciano
+  piscando). A escada de prioridades encolheu: o `solving` virou canal próprio e não
+  apaga mais a resposta em exibição; o `stopProcessing()` condicional (cicatriz da
+  v2.4) se dissolveu; o aborto por queda de stream continua; o blackout de boot
+  passou a suprimir a barra inteira.
 - **M4** — split dual-core (antigo M3).
 - **M5** — robustez restante: `Last-Event-ID` + `retry:`, header `Authorization`.
   *(O timeout de headers half-open e o parse numérico do status HTTP, da lista

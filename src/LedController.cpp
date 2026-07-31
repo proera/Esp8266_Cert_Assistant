@@ -1,11 +1,11 @@
 /*
  * LedController.cpp
  *
- * Implementação da máquina de estados das 5 posições de resposta.
+ * Implementação da máquina de estados da barra (6 respostas + 2 status).
  *
- * A máquina de estados é a mesma do D1 Mini (v2.x); só a borda de saída mudou:
- * writeMask() escreve num framebuffer CRGB e transmite via FastLED/RMT, em vez
- * de digitalWrite em 5 GPIOs.
+ * A lógica das respostas é a mesma do D1 Mini (v2.x), estendida de 5 para 6
+ * posições. O que era "padrão de conexão/ocioso/processando nos mesmos LEDs"
+ * virou o canal de status dos pixels 6-7 (renderStatus), desde o M3.
  */
 
 #include "LedController.h"
@@ -13,10 +13,10 @@
 #define BIT(i) (1u << (i))
 #define ALL_LEDS_MASK ((1u << LED_COUNT) - 1u)
 
-// Cor de cada posição de resposta (A-E), na ordem dos pixels 0..LED_COUNT-1.
+// Cor de cada posição de resposta (A-F), na ordem dos pixels 0..LED_COUNT-1.
 static const CRGB kPosColor[LED_COUNT] = {
   CRGB(LED_COLOR_A), CRGB(LED_COLOR_B), CRGB(LED_COLOR_C),
-  CRGB(LED_COLOR_D), CRGB(LED_COLOR_E),
+  CRGB(LED_COLOR_D), CRGB(LED_COLOR_E), CRGB(LED_COLOR_F),
 };
 
 void LedController::begin() {
@@ -28,33 +28,50 @@ void LedController::begin() {
 
   fill_solid(_bar, LED_BAR_COUNT, CRGB::Black);
   _lastMask = 0xFF;  // força a 1ª transmissão
+  _dirty = false;
   allOff();
+  flush();
 
   _answerActive = false;
   _connected = false;
+  _processing = false;
   _bootMillis = millis();
   _firstAnswerReceived = false;
   _blackoutAnnounced = false;
 }
 
 // ========================================
-// Saída de baixo nível
+// Saída de baixo nível (frame; flush() transmite)
 // ========================================
 void LedController::writeMask(uint8_t mask) {
   if (mask == _lastMask) {
-    return;  // nada mudou: não retransmite o barramento WS2812
+    return;  // nada mudou nos pixels de resposta
   }
   _lastMask = mask;
 
   for (uint8_t i = 0; i < LED_COUNT; i++) {
     _bar[i] = (mask & BIT(i)) ? kPosColor[i] : CRGB::Black;
   }
-  // Pixels além de LED_COUNT ficam pretos desde o begin(); nada os altera.
-  FastLED.show();
+  _dirty = true;
+}
+
+void LedController::setStatusPixel(uint8_t pix, const CRGB& c) {
+  if (_bar[pix] == c) {
+    return;
+  }
+  _bar[pix] = c;
+  _dirty = true;
 }
 
 void LedController::allOff() {
   writeMask(0);
+}
+
+void LedController::flush() {
+  if (_dirty) {
+    FastLED.show();
+    _dirty = false;
+  }
 }
 
 // ========================================
@@ -63,94 +80,92 @@ void LedController::allOff() {
 void LedController::update() {
   unsigned long now = millis();
 
-  if (_answerActive) {
-    switch (_mode) {
-      case MODE_HOLD:       renderHold(now);        break;
-      case MODE_CHASE:      renderChase(now);       break;
-      case MODE_ERROR:      renderError(now);       break;
-      case MODE_SEQ:        renderSeq(now);         break;
-      case MODE_PROCESSING: renderProcessing(now);  break;
-    }
-    return;
-  }
-
-  // Sem resposta ativa: padrão de conexão/ocioso.
-  // Janela de boot: por LED_BOOT_BLINK_MS os LEDs sinalizam normalmente; depois
-  // ficam apagados até a 1ª resposta. O stream/serial seguem ativos no blackout.
+  // Janela de boot: por LED_BOOT_BLINK_MS a barra sinaliza normalmente; depois
+  // blackout TOTAL (respostas e status) até a 1ª resposta. O stream/serial
+  // seguem ativos no blackout. (_answerActive implica _firstAnswerReceived,
+  // então o blackout nunca interfere na exibição de uma resposta.)
   if (!_firstAnswerReceived && (now - _bootMillis) >= LED_BOOT_BLINK_MS) {
     if (!_blackoutAnnounced) {
-      Serial.println(F("[LED] Janela de boot encerrada sem resposta -> LEDs apagados ate a 1a resposta"));
+      Serial.println(F("[LED] Janela de boot encerrada sem resposta -> barra apagada ate a 1a resposta"));
       _blackoutAnnounced = true;
     }
     allOff();
+    setStatusPixel(LED_PIX_STATUS_CONN, CRGB::Black);
+    setStatusPixel(LED_PIX_STATUS_PROC, CRGB::Black);
+    flush();
     return;
   }
 
-  if (_connected) {
-    renderIdle(now);
+  // Canal de resposta (pixels 0-5)
+  if (_answerActive) {
+    switch (_mode) {
+      case MODE_HOLD:  renderHold(now);   break;
+      case MODE_CHASE: renderChase(now);  break;
+      case MODE_ERROR: renderError(now);  break;
+      case MODE_SEQ:   renderSeq(now);    break;
+    }
   } else {
-    renderConnecting(now);
+    allOff();
   }
+
+  // Canal de status (pixels 6-7) — independente da resposta.
+  renderStatus(now);
+  flush();
 }
 
 void LedController::setConnected(bool connected) {
-  // Stream caiu no meio de um "processando": aborta. Senão o LED C piscaria
-  // indefinidamente (o processando não tem TTL) escondendo a queda da conexão.
+  // Stream caiu no meio de um "processando": aborta. O processando não tem
+  // TTL — sem isto o pixel 7 piscaria indefinidamente escondendo a queda.
   // Ao reabrir, o status inicial do servidor ressincroniza o estado.
-  if (!connected && _answerActive && _mode == MODE_PROCESSING) {
-    Serial.println(F("[LED] Stream caiu durante o processamento -> abortando LED C"));
-    allOff();
-    _answerActive = false;
+  if (!connected && _processing) {
+    Serial.println(F("[LED] Stream caiu durante o processamento -> abortando pixel de solving"));
+    _processing = false;
   }
   _connected = connected;
 }
 
 // ========================================
-// D) Processando (status solving): LED C piscando até answer / error / idle
+// Canal de status: pixel 6 (conexão) + pixel 7 (processamento)
+// ========================================
+void LedController::renderStatus(unsigned long now) {
+  // Pixel 6 — conexão: âmbar piscando enquanto (re)conecta; heartbeat verde
+  // discreto (pulso de LED_IDLE_PULSE_MS a cada LED_IDLE_PERIOD_MS) quando ok.
+  CRGB conn;
+  if (!_connected) {
+    bool on = ((now / LED_CONN_BLINK_MS) % 2) == 0;
+    conn = on ? CRGB(LED_COLOR_STATUS_CONN) : CRGB::Black;
+  } else {
+    unsigned long phase = now % LED_IDLE_PERIOD_MS;
+    conn = (phase < LED_IDLE_PULSE_MS) ? CRGB(LED_COLOR_STATUS_OK) : CRGB::Black;
+  }
+  setStatusPixel(LED_PIX_STATUS_CONN, conn);
+
+  // Pixel 7 — processamento: ciano piscando enquanto houver solving.
+  CRGB proc = CRGB::Black;
+  if (_processing) {
+    bool on = ((now / LED_PROC_BLINK_MS) % 2) == 0;
+    proc = on ? CRGB(LED_COLOR_STATUS_PROC) : CRGB::Black;
+  }
+  setStatusPixel(LED_PIX_STATUS_PROC, proc);
+}
+
+// ========================================
+// D) Processando (status solving): pixel 7 até answer / error / idle
 // ========================================
 void LedController::showProcessing() {
-  if (_answerActive && _mode == MODE_PROCESSING) {
-    return;  // já processando: não reinicia o piscar (evita glitch visual)
-  }
-  _answerActive = true;
+  _processing = true;
   _firstAnswerReceived = true;  // encerra o blackout pós-boot, se ativo
-  _mode = MODE_PROCESSING;
-  _animStart = millis();
-  allOff();
 }
 
 void LedController::stopProcessing() {
-  // Só encerra se o que está no ar é o "processando". Se for uma resposta,
-  // ignora: no fluxo normal o status idle chega logo após o answer.
-  if (_answerActive && _mode == MODE_PROCESSING) {
-    allOff();
-    _answerActive = false;
-  }
-}
-
-void LedController::renderProcessing(unsigned long now) {
-  // Sem TTL: pisca até um answer/error/idle chegar (ou o stream cair).
-  bool on = ((now / LED_PROC_BLINK_MS) % 2) == 0;
-  writeMask(on ? BIT(LED_PROC_INDEX) : 0);
+  // Canal independente: encerrar o processando nunca toca na resposta em
+  // exibição (era esta a razão do condicional que existia até a v3.1, quando
+  // status e resposta dividiam os mesmos 5 LEDs).
+  _processing = false;
 }
 
 // ========================================
-// A) Padrões de conexão (somente quando !_answerActive)
-// ========================================
-void LedController::renderConnecting(unsigned long now) {
-  // Pontas (A e E) piscam juntas rápido.
-  bool on = ((now / LED_CONN_BLINK_MS) % 2) == 0;
-  writeMask(on ? (BIT(0) | BIT(LED_COUNT - 1)) : 0);
-}
-
-void LedController::renderIdle(unsigned long now) {
-  // Heartbeat discreto: pulso curto no LED A a cada LED_IDLE_PERIOD_MS.
-  unsigned long phase = now % LED_IDLE_PERIOD_MS;
-  writeMask(phase < LED_IDLE_PULSE_MS ? BIT(0) : 0);
-}
-
-// ========================================
-// B) HOLD: resposta retida por LED_HOLD_TTL_MS, depois volta ao heartbeat.
+// B) HOLD: resposta retida por LED_HOLD_TTL_MS, depois apaga.
 //    Começa com um blank de LED_HOLD_INTAKE_MS (transição visível p/ respostas
 //    iguais consecutivas). Conteúdo: _holdMask fixo + _holdBlinkMask piscando.
 //    single/multiple => _holdBlinkMask == 0 (estático). yesno => "Não" pisca.
@@ -166,7 +181,7 @@ void LedController::startHold() {
 void LedController::renderHold(unsigned long now) {
   unsigned long elapsed = now - _animStart;
 
-  // Expirou: a resposta deixa de ser exibida e a saúde da conexão reassume.
+  // Expirou: a resposta deixa de ser exibida.
   if (elapsed >= LED_HOLD_TTL_MS) {
     allOff();
     _answerActive = false;
@@ -187,7 +202,7 @@ void LedController::renderHold(unsigned long now) {
 }
 
 // ========================================
-// B) test -> chase A->E
+// B) test -> chase A->F
 // ========================================
 void LedController::showTestChase() {
   _answerActive = true;
@@ -204,14 +219,14 @@ void LedController::renderChase(unsigned long now) {
 
   if (step >= total) {
     allOff();
-    _answerActive = false;  // volta ao ocioso
+    _answerActive = false;  // terminou
     return;
   }
   writeMask(BIT(step % LED_COUNT));
 }
 
 // ========================================
-// B) erro -> 5 LEDs piscando juntos
+// B) erro -> os 6 pixels de resposta piscando juntos
 // ========================================
 void LedController::showError() {
   _answerActive = true;
@@ -282,7 +297,7 @@ void LedController::showYesNo(const bool* flags, uint8_t n) {
   }
   if (n > LED_COUNT) n = LED_COUNT;
 
-  // Afirmação i -> LED i, todas simultâneas e retidas até o próximo answer.
+  // Afirmação i -> pixel i, todas simultâneas e retidas até o próximo answer.
   // Sim = fixo (_holdMask); Não = piscando (_holdBlinkMask).
   uint8_t solid = 0;
   uint8_t blink = 0;
@@ -308,10 +323,10 @@ void LedController::showSlots(const uint8_t* slots, uint8_t n) {
     uint8_t v = slots[i];
     if (v >= 1 && v <= LED_COUNT) {
       _stepType[i] = STEP_SOLID;
-      _stepLed[i] = v - 1;  // posição -> LED
+      _stepLed[i] = v - 1;  // posição -> pixel
     } else {
-      // Slot fora de 1..5: passo de erro curto (5 juntos piscam 1x).
-      _stepType[i] = STEP_BLINK5;
+      // Slot fora de 1..6: passo de erro curto (os 6 juntos piscam 1x).
+      _stepType[i] = STEP_BLINKALL;
       _stepLed[i] = 0;
     }
   }
@@ -327,7 +342,7 @@ void LedController::renderSeq(unsigned long now) {
 
   if (idx >= totalSteps) {
     allOff();
-    _answerActive = false;  // terminou: volta ao ocioso
+    _answerActive = false;  // terminou
     return;
   }
 
@@ -349,8 +364,8 @@ void LedController::renderSeq(unsigned long now) {
       writeMask(on ? BIT(led) : 0);
       break;
     }
-    case STEP_BLINK5: {
-      // Pisca os 5 juntos 1x dentro do passo.
+    case STEP_BLINKALL: {
+      // Pisca os 6 juntos 1x dentro do passo.
       writeMask(within < LED_SEQ_ERRBLINK_MS ? ALL_LEDS_MASK : 0);
       break;
     }

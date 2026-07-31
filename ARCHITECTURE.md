@@ -7,13 +7,13 @@ Documento de arquitetura interna. Para instalação, montagem e comportamento do
 
 Firmware **PlatformIO** para **ESP32-S3 Super Mini** que consome um stream **SSE** (Server-Sent Events)
 da API CertMind e aciona os pixels de uma **barra WS2812 de 8 LEDs** (GPIO 13) conforme cada
-situação emitida pelo backend. No M1 do porte, apenas os pixels 0–4 (posições A–E) são usados —
-comportamento idêntico ao firmware v2.5 do D1 Mini.
+situação emitida pelo backend. Dois canais independentes desde a v3.2: pixels **0–5 = respostas
+(A–F)** e pixels **6–7 = status dedicado** (conexão e processamento).
 
 | | |
 |---|---|
 | **Plataforma** | ESP32-S3 Super Mini (ESP32-S3FH4R2: 4 MB flash quad + 2 MB PSRAM quad) — framework Arduino |
-| **Versão** | 3.0 |
+| **Versão** | 3.2 |
 | **Environment** | `[env:esp32s3_supermini]` (board `esp32-s3-devkitc-1` com overrides de flash/PSRAM) |
 | **Dependências** | ArduinoJson `^6.21.5`, FastLED `3.9.13` |
 | **Protocolo** | HTTP/1.1 GET → SSE (texto claro, sem TLS) |
@@ -161,7 +161,8 @@ Centraliza **todas** as constantes via `#define`. Nenhuma configuração espalha
 | Conexão / ocioso | `LED_CONN_BLINK_MS`, `LED_IDLE_PERIOD_MS`, `LED_IDLE_PULSE_MS` | 150 ms, 2000 ms, 80 ms |
 | Janela de boot | `LED_BOOT_BLINK_MS` | 300000 ms (5 min) |
 | HOLD | `LED_HOLD_TTL_MS`, `LED_HOLD_INTAKE_MS`, `LED_YESNO_BLINK_MS` | 12000 ms, 250 ms, 350 ms |
-| Processando | `LED_PROC_INDEX`, `LED_PROC_BLINK_MS` | 2 (LED C), 250 ms |
+| Processando | `LED_PROC_BLINK_MS` | 250 ms (pixel 7, ciano) |
+| Pixels de status | `LED_PIX_STATUS_CONN`, `LED_PIX_STATUS_PROC`, `LED_COLOR_STATUS_*` | 6, 7 · âmbar/verde/ciano |
 | Test / erro | `LED_CHASE_STEP_MS`, `LED_CHASE_PASSES`, `LED_ERROR_ON_MS`, `LED_ERROR_OFF_MS`, `LED_ERROR_CYCLES` | 120 ms, 2, 250 ms, 250 ms, 3 |
 | Sequências | `LED_SEQ_STEP_MS`, `LED_SEQ_GAP_MS`, `LED_SEQ_BLINK_MS`, `LED_SEQ_PASSES`, `LED_SEQ_ERRBLINK_MS` | 1500 ms, 400 ms, 200 ms, 2, 250 ms |
 | Serial | `SERIAL_BAUD_RATE` | 115200 |
@@ -225,56 +226,65 @@ CHUNK_SIZE ──▶ CHUNK_DATA ──▶ CHUNK_CRLF ──┐
 
 ### 5.4. `LedController`
 
-Responsabilidade: máquina de estados dos 5 LEDs com animações não-bloqueantes.
+Responsabilidade: máquina de estados da barra WS2812 — **dois canais independentes** com
+animações não-bloqueantes: respostas (pixels 0–5, A–F) e status (6 = conexão, 7 = processamento).
 
-**Modos de exibição:**
+**Canal de resposta (pixels 0–5):**
 
 | Modo | Trigger | Comportamento | Fim |
 |---|---|---|---|
-| **Conectando** | `setConnected(false)` | A+E piscam juntos (150 ms) | — |
-| **Ocioso** | `setConnected(true)` | Pulso curto em A (80 ms a cada 2 s) | — |
-| **Blackout** | janela de boot expirada, sem 1ª resposta | Todos apagados | 1ª resposta (definitivo) |
-| `MODE_HOLD` | `showSingle()` / `showMultiple()` / `showYesNo()` | LEDs fixos (yesno: "Não" piscando) | TTL de 12 s |
-| `MODE_CHASE` | `showTestChase()` | Varredura A→E, 2 passadas de 120 ms/passo | Fim da animação |
-| `MODE_ERROR` | `showError()` | Os 5 piscam juntos 3× (250 ms on/off) | Fim da animação |
+| `MODE_HOLD` | `showSingle()` / `showMultiple()` / `showYesNo()` | Pixels fixos nas suas cores (yesno: "Não" piscando) | TTL de 12 s |
+| `MODE_CHASE` | `showTestChase()` | Varredura A→F, 2 passadas de 120 ms/passo | Fim da animação |
+| `MODE_ERROR` | `showError()` | Os 6 piscam juntos 3× (250 ms on/off) | Fim da animação |
 | `MODE_SEQ` | `showSlots()` | Passo a passo com gaps, 2 passadas | Fim da animação |
-| `MODE_PROCESSING` | `showProcessing()` | LED C piscando a 250 ms, **sem TTL** | `answer` / `error` / `idle` / queda do stream |
 
-**Prioridade de exibição:**
+**Canal de status (pixels 6–7, `renderStatus()` — roda sempre, mesmo com resposta ativa):**
 
-1. Resposta tem prioridade sobre conexão.
-2. Um `answer` novo sempre interrompe a exibição atual.
-3. `test` / erro / sequências tocam e voltam ao ocioso.
-4. `single` / `multiple` / `yesno` ficam retidos por `LED_HOLD_TTL_MS` e voltam ao heartbeat.
-5. Conexão caindo/reconectando vence o estado ocioso.
-6. "Processando" vence resposta segurada e dura até chegar `answer` / `error` / `idle`.
+| Pixel | Estado | Comportamento |
+|---|---|---|
+| 6 | desconectado | Âmbar piscando (150 ms) |
+| 6 | conectado | Pulso verde curto (80 ms a cada 2 s) |
+| 7 | `_processing` | Ciano piscando (250 ms), **sem TTL** — até `answer` / `error` / `idle` / queda do stream |
+| 7 | ocioso | Apagado |
+
+**Prioridade de exibição (encolheu na v3.2 — status não disputa mais pixels com resposta):**
+
+1. Um `answer` novo sempre interrompe a exibição atual (nos pixels de resposta).
+2. `test` / erro / sequências tocam e apagam.
+3. `single` / `multiple` / `yesno` ficam retidos por `LED_HOLD_TTL_MS` e apagam.
+4. Blackout de boot suprime a barra inteira (respostas **e** status) até a 1ª resposta.
 
 **Propriedades importantes:**
 
 - **100% não-bloqueante** — toda temporização em `millis()`, zero `delay()`.
 - **Blank de intake** (250 ms) — todo HOLD começa apagado, o que torna visível a chegada de
   respostas iguais consecutivas (ex.: `A` depois `A`).
-- **`yesno` simultâneo** — cada afirmação acende seu LED ao mesmo tempo: Sim fixo, Não piscando.
-- **`stopProcessing()` é condicional** — só age se o modo corrente é `MODE_PROCESSING`. É isso que
-  impede o `idle` (que chega logo após o `answer`) de apagar a resposta exibida.
-- **`showProcessing()` é idempotente** — se já está em `MODE_PROCESSING`, não reinicia a animação.
-- **Queda do stream aborta o "processando"** — `setConnected(false)` derruba `MODE_PROCESSING`
-  porque ele não tem TTL; sem isso o LED C piscaria para sempre escondendo a perda do stream.
-- **Janela de boot** (5 min) — LEDs sinalizam normalmente e depois entram em blackout até a
-  1ª resposta; o gate só roda quando não há resposta ativa.
+- **`yesno` simultâneo** — cada afirmação acende seu pixel ao mesmo tempo: Sim fixo, Não piscando.
+- **`stopProcessing()` deixou de ser condicional na v3.2** — como o processando tem pixel próprio,
+  encerrar o solving nunca toca na resposta em exibição. (Até a v3.1, com status e resposta nos
+  mesmos 5 LEDs, o condicional era o que impedia o `idle` pós-`answer` de apagar a resposta.)
+- **Queda do stream aborta o "processando"** — `setConnected(false)` zera `_processing` porque
+  ele não tem TTL; sem isso o pixel 7 piscaria para sempre escondendo a perda do stream.
+- **Janela de boot** (5 min) — a barra sinaliza normalmente e depois entra em blackout total até
+  a 1ª resposta; `_answerActive` implica `_firstAnswerReceived`, então o gate nunca corta uma
+  resposta em exibição.
+- **`flush()` centraliza o `FastLED.show()`** — os helpers só marcam `_dirty` quando algo muda;
+  um frame idêntico não é retransmitido.
 
 **Estados internos:**
 
 ```
-_answerActive (bool)        → há resposta/processando sendo exibido
-_mode (enum Mode)           → HOLD / CHASE / ERROR / SEQ / PROCESSING
-_connected (bool)           → saúde do stream (só usada quando !_answerActive)
+_answerActive (bool)        → há resposta sendo exibida (pixels 0-5)
+_mode (enum Mode)           → HOLD / CHASE / ERROR / SEQ
+_connected (bool)           → saúde do stream (pixel 6)
+_processing (bool)          → solving em andamento (pixel 7)
 _animStart (unsigned long)  → millis() do início da animação (TTL, blank, passos)
 _bootMillis                 → millis() do begin(): início da janela de boot
 _firstAnswerReceived        → encerra o blackout em definitivo (não rearma)
 _blackoutAnnounced          → log one-shot ao entrar em blackout
-_holdMask / _holdBlinkMask  → máscaras de LEDs fixos / piscando no HOLD
+_holdMask / _holdBlinkMask  → máscaras de pixels fixos / piscando no HOLD
 _stepType / _stepLed / _stepCount → buffer da sequência corrente
+_bar / _lastMask / _dirty   → framebuffer CRGB[8] + caches do flush()
 ```
 
 ### 5.5. `main.cpp`
@@ -282,7 +292,7 @@ _stepType / _stepLed / _stepCount → buffer da sequência corrente
 Responsabilidade: orquestração e parsing JSON.
 
 - **`setup()`** — Serial, LEDs, WiFi e SSE (com os dois callbacks).
-- **`loop()`** — `leds.update()`, `sse.loop()`, `leds.setConnected(...)`, log de heap, `yield()`.
+- **`loop()`** — `leds.update()`, `sse.loop()`, `leds.setConnected(...)`, log de heap, `delay(1)`.
 - **`handleAnswer(char* payload)`** — decide o padrão por `hasData` + `questionType`.
 - **`handleStatus(char* payload)`** — decide o padrão por `state`.
 
@@ -291,11 +301,9 @@ Responsabilidade: orquestração e parsing JSON.
 - `StaticJsonDocument<4096>` (`g_doc`) para os dados — **global**, para não pesar na pilha da
   loopTask. Sem filtro desde a v3.1 (M2): o payload inteiro é parseado e o uso do pool é logado
   a cada `answer` (`[JSON] pool=`).
-  Ele lista `hasData`, `questionType`, `letters`, `flags`, `slots`, `slotCount`, `answerText`,
-  `state` e `activeSolves` — e **omite `explanation`**, o campo mais longo.
-- **Zero-copy** via buffer mutável (`char*`) → ativa o `StringMover` do ArduinoJson (~160/512 bytes
-  de pool, contra ~507/512 quando as strings são copiadas).
-- Letras são normalizadas com `toupper()` e validadas em A–E; arrays são truncados em `LED_COUNT`
+- **Zero-copy** via buffer mutável (`char*`) → ativa o `StringMover` do ArduinoJson: o pool
+  carrega só a estrutura, não as strings.
+- Letras são normalizadas com `toupper()` e validadas em A–F; arrays são truncados em `LED_COUNT`
   com aviso na serial.
 
 ---
@@ -364,7 +372,7 @@ que encerra o evento antes da hora sempre que um chunk termina no meio de uma li
 }
 ```
 
-`letters` só é lida em `single`/`multiple`; `flags` em `yesno`; `slots` (posições 1–5) em
+`letters` só é lida em `single`/`multiple`; `flags` em `yesno`; `slots` (posições 1–6) em
 `dropdown`/`ordering`/`matching`. `explanation` e `elapsedMilliseconds` não são parseados.
 
 ### 6.5. Payload do evento `status`
@@ -387,12 +395,14 @@ ordem de cor GRB). O mapeamento lógico fica nos pixels:
 
 | Pixel | Cor (`LED_COLOR_*`) | Função |
 |---|---|---|
-| 0 | Verde    | LED A (posição 1) |
-| 1 | Amarelo  | LED B (posição 2) |
-| 2 | Vermelho | LED C (posição 3) — também o LED de "processando" |
-| 3 | Azul     | LED D (posição 4) |
-| 4 | Branco   | LED E (posição 5) |
-| 5–7 | — | Apagados; reservados ao M3 (posição F = magenta + 2 pixels de status) |
+| 0 | Verde    | Resposta A (posição 1) |
+| 1 | Amarelo  | Resposta B (posição 2) |
+| 2 | Vermelho | Resposta C (posição 3) |
+| 3 | Azul     | Resposta D (posição 4) |
+| 4 | Branco   | Resposta E (posição 5) |
+| 5 | Magenta  | Resposta F (posição 6) |
+| 6 | Âmbar / Verde | Status: conexão (âmbar piscando = (re)conectando; pulso verde = ocioso) |
+| 7 | Ciano    | Status: processamento (piscando = solving; apagado = idle) |
 
 Pinos a **evitar** no S3 em expansões futuras: GPIO 0 (strapping/BOOT), 19–20 (USB D-/D+),
 26–32 (flash SPI), 45–46 (strapping), 48 (WS2812 onboard).
@@ -408,12 +418,12 @@ coisas (era `yield()` no ESP8266).
 
 | Evento | Duração | Descrição |
 |---|---|---|
-| Blink de conexão | 150 ms | A+E piscam ao conectar/reconectar |
-| Pulso ocioso | 80 ms a cada 2 s | Heartbeat em A |
-| Janela de boot | 5 min | LEDs sinalizam antes do blackout |
-| Processando | 250 ms on/off | LED C piscando, sem TTL |
-| Chase (passo) | 120 ms | 2 passadas nos 5 LEDs |
-| Erro | 250 ms on/off × 3 | Os 5 LEDs juntos |
+| Blink de conexão | 150 ms | Pixel 6 em âmbar ao conectar/reconectar |
+| Pulso ocioso | 80 ms a cada 2 s | Heartbeat verde no pixel 6 |
+| Janela de boot | 5 min | Barra sinaliza antes do blackout total |
+| Processando | 250 ms on/off | Pixel 7 em ciano, sem TTL |
+| Chase (passo) | 120 ms | 2 passadas nos 6 pixels de resposta |
+| Erro | 250 ms on/off × 3 | Os 6 pixels de resposta juntos |
 | Sequência (passo) | 1500 ms + gap de 400 ms | 2 passadas |
 | HOLD TTL | 12 s | Resposta exibida antes de voltar ao ocioso |
 | HOLD intake | 250 ms | Blank no início de cada resposta |
@@ -437,8 +447,8 @@ coisas (era `yield()` no ESP8266).
 | **Zero-copy JSON** | Buffer mutável (`char*`) ativa o `StringMover` do ArduinoJson — o pool carrega só a estrutura, não as strings |
 | **Sem filtro JSON (v3.1/M2)** | O filtro só existia para ignorar `explanation` e caber nos 512 bytes do 8266; com pool de 4096 o payload inteiro é parseado e o uso é logado (`[JSON] pool=`) |
 | **Erro visível no `answer`** | `showError()` em vez de `return` silencioso — o silêncio era o que escondia bugs (v2.1) |
-| **Erro *invisível* no `status`** | Piscar os 5 LEDs num status corrompido seria lido como "questão ilegível"; fica só no log |
-| **`stopProcessing()` condicional** | O `idle` chega logo após o `answer`; um `allOff()` incondicional apagaria a resposta |
+| **Erro *invisível* no `status`** | Piscar os pixels de resposta num status corrompido seria lido como "questão ilegível"; fica só no log |
+| **Status em pixels dedicados (v3.2)** | Conexão/processamento não disputam mais pixels com as respostas; o `solving` deixa de apagar a resposta exibida e o `stopProcessing()` condicional (cicatriz da v2.4) se dissolveu |
 | **Processando sem TTL, abortado na queda** | O andamento pode demorar; mas sem TTL, uma queda de stream deixaria o LED piscando para sempre |
 | **Blackout pós-boot** | Evita poluição luminosa em uso prolongado sem eventos; encerra em definitivo na 1ª resposta |
 | **Chunk-size sem dígito hex apenas rearma** | Tratá-lo como tamanho 0 dispararia um retry extra e pularia um degrau do backoff |
@@ -455,7 +465,8 @@ coisas (era `yield()` no ESP8266).
 4. **NÃO mudar `AnswerCallback` para `const char*`** — quebra o zero-copy e estoura o documento JSON.
 5. **NÃO remover a camada de de-framing chunked** — o payload volta a truncar de forma intermitente.
 6. **NÃO reduzir o log de headers** de volta a "só a linha de status".
-7. **NÃO trocar `stopProcessing()` por um `allOff()` incondicional** — apaga a resposta recém-exibida.
+7. **NÃO voltar o "processando" para os pixels de resposta** — o canal separado (pixel 7) é o que
+   permite ao `solving`/`idle` nunca interferir na resposta em exibição.
 8. **NÃO adicionar `delay()` no caminho de renderização** — os `delay(1)` do loop/parser são o
    tick do FreeRTOS (ex-`yield()`) e **não** devem voltar a ser `yield()`.
 9. O rádio do ESP32-S3 opera apenas em WiFi **2,4 GHz**.

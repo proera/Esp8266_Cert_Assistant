@@ -59,13 +59,17 @@
 // CONFIGURAÇÕES DA BARRA DE LED (WS2812)
 // ========================================
 // Barra WS2812 de 8 pixels no GPIO 13 (FastLED sobre RMT), substituindo os
-// 5 LEDs discretos do D1 Mini. No M1 apenas os pixels 0-4 são usados (posições
-// A-E, comportamento idêntico ao D1); os pixels 5-7 ficam apagados até o M3
-// (6 respostas A-F + 2 pixels de status).
+// 5 LEDs discretos do D1 Mini. Desde o M3: pixels 0-5 = respostas (A-F) e
+// pixels 6-7 = status dedicado (conexão e processamento) — resposta e saúde
+// da conexão não disputam mais os mesmos LEDs.
 #define LED_BAR_PIN 13
 #define LED_BAR_COUNT 8
 
-#define LED_COUNT 5  // posições de resposta em uso (A=1 .. E=5); vira 6 no M3
+#define LED_COUNT 6  // posições de resposta (A=1 .. F=6)
+
+// Pixels de status (canal independente das respostas)
+#define LED_PIX_STATUS_CONN 6  // conexão: âmbar piscando = (re)conectando; pulso verde = ocioso
+#define LED_PIX_STATUS_PROC 7  // processamento: ciano piscando = solving; apagado = idle
 
 // Brilho global (0-255) e teto de potência do FastLED. O limite de 5 V/600 mA
 // foi o validado no projeto de teste do M0 — 8 pixels em branco cheio puxariam
@@ -74,22 +78,28 @@
 #define LED_MAX_VOLTS 5
 #define LED_MAX_MILLIAMPS 600
 
-// Cor de cada posição (0xRRGGBB), reproduzindo os LEDs físicos do D1 Mini.
-// Hex cru (e não CRGB::) para o Config.h não depender do FastLED.
+// Cor de cada posição (0xRRGGBB), reproduzindo os LEDs físicos do D1 Mini
+// (F, sem equivalente no D1, ganhou magenta). Hex cru (e não CRGB::) para o
+// Config.h não depender do FastLED.
 #define LED_COLOR_A 0x00FF00  // Verde    (Posição 1 / Letra A)
 #define LED_COLOR_B 0xFFFF00  // Amarelo  (Posição 2 / Letra B)
 #define LED_COLOR_C 0xFF0000  // Vermelho (Posição 3 / Letra C)
 #define LED_COLOR_D 0x0000FF  // Azul     (Posição 4 / Letra D)
 #define LED_COLOR_E 0xFFFFFF  // Branco   (Posição 5 / Letra E)
-#define LED_COLOR_F 0xFF00FF  // Magenta  (Posição 6 / Letra F — reservado ao M3)
+#define LED_COLOR_F 0xFF00FF  // Magenta  (Posição 6 / Letra F)
+
+// Cores do canal de status
+#define LED_COLOR_STATUS_CONN 0xFF6000  // Âmbar: conectando/reconectando (pixel 6 piscando)
+#define LED_COLOR_STATUS_OK   0x00FF00  // Verde: heartbeat de ocioso (pulso curto no pixel 6)
+#define LED_COLOR_STATUS_PROC 0x00FFFF  // Ciano: processando (pixel 7 piscando)
 
 // ========================================
 // TIMINGS DOS PADRÕES DE LED (ms)
 // ========================================
-// A) Conexão / reconexão: LEDs das pontas (A e E) piscam juntos rápido
+// A) Conexão / reconexão: pixel de status (6) piscando em âmbar
 #define LED_CONN_BLINK_MS 150
 
-// A) Ocioso (conectado, sem resposta): heartbeat discreto no LED A
+// A) Ocioso (conectado): heartbeat discreto no pixel de status (6), em verde
 #define LED_IDLE_PERIOD_MS 2000  // 1 pulso a cada ~2s
 #define LED_IDLE_PULSE_MS 80     // duração do pulso
 
@@ -100,11 +110,11 @@
 //    e o fluxo normal (conexão/ocioso/resposta) reassume.
 #define LED_BOOT_BLINK_MS 300000UL  // 5 min sinalizando no boot, depois apaga
 
-// B) Evento de teste (questionType="test"): chase A->E
+// B) Evento de teste (questionType="test"): chase A->F
 #define LED_CHASE_STEP_MS 120    // tempo de cada LED no chase
 #define LED_CHASE_PASSES 2       // repete a varredura 2x
 
-// B) Erro (hasData=false / letra inválida): 5 LEDs piscando juntos
+// B) Erro (hasData=false / letra inválida): os 6 pixels de resposta piscando juntos
 #define LED_ERROR_ON_MS 250
 #define LED_ERROR_OFF_MS 250
 #define LED_ERROR_CYCLES 3       // pisca 3x
@@ -114,13 +124,11 @@
 #define LED_SEQ_GAP_MS 400       // intervalo (tudo apagado) entre passos
 #define LED_SEQ_BLINK_MS 200     // período do piscar rápido (resposta "Não")
 #define LED_SEQ_PASSES 2         // toca a sequência + 1 repetição
-#define LED_SEQ_ERRBLINK_MS 250  // blink dos 5 juntos p/ slot inválido
+#define LED_SEQ_ERRBLINK_MS 250  // blink dos 6 juntos p/ slot inválido
 
-// D) Processando (evento status, state="solving"): LED do meio (C) piscando
-// continuamente até chegar answer / status error / status idle. Padrão distinto
-// de todos os outros: pontas A+E = conexão, heartbeat em A = ocioso, 5 juntos =
-// erro, chase A->E = test, LEDs fixos = resposta.
-#define LED_PROC_INDEX 2         // LED C (posição 3) = índice 2
+// D) Processando (evento status, state="solving"): pixel de status (7)
+// piscando em ciano continuamente até chegar answer / status error / status
+// idle. Canal independente: NÃO interfere na resposta exibida nos pixels 0-5.
 #define LED_PROC_BLINK_MS 250    // meio-período: 250 ms aceso / 250 ms apagado
 
 // B) HOLD (single / multiple / yesno): resposta retida com TTL.

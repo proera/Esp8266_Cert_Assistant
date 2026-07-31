@@ -1,7 +1,7 @@
 /*
  * Sistema CertMind - Cliente de Stream ESP32-S3 (Super Mini)
  *
- * Versão: 3.1
+ * Versão: 3.2
  *
  * Descrição: Consome o stream SSE da API CertMind por UMA conexão HTTP
  * persistente (GET, texto claro, sem TLS) e aciona os LEDs da barra WS2812
@@ -13,11 +13,22 @@
  * não envia imagem, não faz request/response.
  *
  * Hardware: ESP32-S3 Super Mini (FH4R2) + barra WS2812 de 8 pixels no
- * GPIO 13. Pixels 0-4 = posições/letras A-E => 1-5, com as cores dos LEDs
- * físicos do D1 Mini (verde/amarelo/vermelho/azul/branco); pixels 5-7
- * apagados (reservados ao M3: 6 respostas A-F + 2 pixels de status).
+ * GPIO 13. Pixels 0-5 = posições/letras A-F => 1-6, com as cores dos LEDs
+ * físicos do D1 Mini + magenta para F. Pixel 6 = conexão (âmbar piscando =
+ * (re)conectando; pulso verde = ocioso). Pixel 7 = processamento (ciano
+ * piscando = solving).
  *
  * Changelog:
+ *   3.2 - LEDs 6+2 (M3 do plano de migração). As respostas ganham a 6ª
+ *         posição (F = magenta) e os pixels 6-7 viram um canal de status
+ *         dedicado: conexão no 6, processamento no 7. A escada de prioridades
+ *         simplifica — um solving novo NÃO apaga mais a resposta em exibição
+ *         (antes vencia a resposta segurada, porque dividiam os mesmos LEDs),
+ *         e o stopProcessing() deixou de precisar ser condicional (a cicatriz
+ *         da v2.4 se dissolve: status e resposta não disputam mais pixels).
+ *         O aborto do processando na queda do stream continua (sem TTL, o
+ *         status inicial do servidor ressincroniza ao reabrir). O blackout
+ *         pós-boot passa a suprimir a barra inteira (respostas + status).
  *   3.1 - Destravar memória (M2 do plano de migração). Buffers do parser SSE
  *         4 K -> 16 K: no ESP8266 um evento maior que 4 K era descartado em
  *         silêncio (o teto existia por falta de RAM). JSON_DOC_SIZE 512 ->
@@ -154,14 +165,14 @@ void handleAnswer(char* payload) {
 
   // 1) test => varredura de conectividade (não é resposta real).
   if (strcmp(qt, "test") == 0) {
-    Serial.println(F("[ANSWER] evento de teste -> chase A->E"));
+    Serial.println(F("[ANSWER] evento de teste -> chase A->F"));
     leds.showTestChase();
     return;
   }
 
   // 2) ilegível => padrão de erro.
   if (!hasData) {
-    Serial.println(F("[ANSWER] questão ilegível -> erro (5 LEDs piscando)"));
+    Serial.println(F("[ANSWER] questão ilegível -> erro (pixels de resposta piscando)"));
     leds.showError();
     return;
   }
@@ -175,7 +186,7 @@ void handleAnswer(char* payload) {
       const char* s = v.as<const char*>();
       if (s && s[0] && !s[1]) {  // exatamente 1 caractere
         char c = toupper((unsigned char)s[0]);
-        if (c >= 'A' && c <= 'E') {
+        if (c >= 'A' && c < 'A' + LED_COUNT) {  // A..F (6 posições desde o M3)
           pos[n++] = (uint8_t)(c - 'A' + 1);
           if (n >= LED_COUNT) break;
         }
@@ -207,7 +218,9 @@ void handleAnswer(char* payload) {
     if (slotCount > LED_COUNT) {
       Serial.print(F("[ANSWER] yesno com slotCount="));
       Serial.print(slotCount);
-      Serial.println(F(" — exibindo só as 5 primeiras (truncado)"));
+      Serial.print(F(" — exibindo só as "));
+      Serial.print(LED_COUNT);
+      Serial.println(F(" primeiras (truncado)"));
     }
     leds.showYesNo(flags, n);
     return;
@@ -236,7 +249,9 @@ void handleAnswer(char* payload) {
     if (slotCount > LED_COUNT) {
       Serial.print(F("[ANSWER] slots com slotCount="));
       Serial.print(slotCount);
-      Serial.println(F(" — exibindo só os 5 primeiros (truncado)"));
+      Serial.print(F(" — exibindo só os "));
+      Serial.print(LED_COUNT);
+      Serial.println(F(" primeiros (truncado)"));
     }
     leds.showSlots(slots, n);
     return;
@@ -277,7 +292,7 @@ void handleStatus(char* payload) {
   Serial.println(activeSolves);
 
   if (strcmp(state, "solving") == 0) {
-    // Vence resposta segurada: há uma nova requisição em andamento.
+    // Canal próprio (pixel 7): sinaliza sem apagar a resposta em exibição.
     leds.showProcessing();
     return;
   }
@@ -293,7 +308,7 @@ void handleStatus(char* payload) {
       Serial.print(reason);
       Serial.print(F(")"));
     }
-    Serial.println(F(" -> erro (5 LEDs piscando)"));
+    Serial.println(F(" -> erro (pixels de resposta piscando)"));
     leds.showError();
     return;
   }
@@ -312,7 +327,7 @@ void setup() {
   Serial.println(F("\n\n"));
   Serial.println(F("╔═══════════════════════════════════════════════╗"));
   Serial.println(F("║  CertMind - Cliente de Stream ESP32-S3        ║"));
-  Serial.println(F("║  Versão: 3.1 (SSE)                            ║"));
+  Serial.println(F("║  Versão: 3.2 (SSE)                            ║"));
   Serial.println(F("╚═══════════════════════════════════════════════╝"));
 
   leds.begin();

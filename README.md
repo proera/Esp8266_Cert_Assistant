@@ -2,13 +2,13 @@
 
 # CertMind · ESP32-S3 Stream Client
 
-**Firmware para ESP32-S3 Super Mini que traduz o stream SSE da API CertMind numa barra de LED WS2812.**
+**Firmware para ESP32-S3 Super Mini que traduz o stream SSE da API CertMind numa barra WS2812: 6 respostas (A–F) + 2 pixels de status.**
 
 Uma única conexão HTTP persistente. Zero `delay()` no caminho de renderização. Zero polling.
 
 <br>
 
-![Firmware](https://img.shields.io/badge/firmware-v3.0-2ea44f?style=flat-square)
+![Firmware](https://img.shields.io/badge/firmware-v3.2-2ea44f?style=flat-square)
 ![Board](https://img.shields.io/badge/board-ESP32--S3_Super_Mini-E7352C?style=flat-square&logo=espressif&logoColor=white)
 ![Framework](https://img.shields.io/badge/framework-Arduino-00979D?style=flat-square&logo=arduino&logoColor=white)
 ![Build](https://img.shields.io/badge/build-PlatformIO-FF7F00?style=flat-square&logo=platformio&logoColor=white)
@@ -46,7 +46,7 @@ pio run --target upload && pio device monitor
 
 ## Arquitetura
 
-Projeto **PlatformIO** com ambiente único `[env:d1_mini]` e uma responsabilidade por arquivo.
+Projeto **PlatformIO** com ambiente único `[env:esp32s3_supermini]` e uma responsabilidade por arquivo.
 
 ```mermaid
 flowchart LR
@@ -54,7 +54,7 @@ flowchart LR
     SSE["<b>SseClient</b><br/>de-framing chunked<br/>parser SSE não-bloqueante<br/>reconexão com backoff"]
     MAIN["<b>main.cpp</b><br/>handleAnswer()<br/>handleStatus()"]
     LED["<b>LedController</b><br/>máquina de estados<br/>100% millis()"]
-    OUT(["LEDs A–E"])
+    OUT(["Barra WS2812: A–F + status"])
 
     API -->|"event: answer<br/>event: status"| SSE
     SSE --> MAIN
@@ -64,10 +64,10 @@ flowchart LR
 
 | Módulo | Responsabilidade |
 |---|---|
-| `src/Config.h` | Toda a parametrização via `#define`: WiFi, endpoint, pinos, timings dos padrões, backoff, tetos de buffer. |
-| `src/WiFiManager.{h,cpp}` | Conexão WiFi inicial (modo STA) e helpers de status. |
+| `src/Config.h` | Toda a parametrização via `#define`: WiFi, endpoint, barra de LED, timings dos padrões, backoff, tetos de buffer. |
+| `src/WiFiManager.{h,cpp}` | Conexão WiFi inicial (modo STA, modem sleep desligado) e helpers de status. |
 | `src/SseClient.{h,cpp}` | Abre o `GET`, valida headers, desmonta o `Transfer-Encoding: chunked`, faz o parser SSE linha-a-linha sem bloquear e reconecta com backoff. |
-| `src/LedController.{h,cpp}` | Máquina de estados dos 5 LEDs — todo o tempo medido em `millis()`, nenhum `delay()`. |
+| `src/LedController.{h,cpp}` | Máquina de estados da barra (6 respostas + 2 status) — todo o tempo medido em `millis()`, nenhum `delay()`. |
 | `src/main.cpp` | Liga os módulos, parseia o JSON (zero-copy) e decide o padrão. |
 
 > Detalhamento interno (diagramas de estado, orçamento de memória, decisões de projeto):
@@ -103,14 +103,16 @@ flowchart LR
 A barra WS2812 usa **um único pino de dados** (GPIO 13). Cada posição de resposta
 é um pixel da barra, com a cor que o LED físico tinha no D1 Mini:
 
-| Pixel | Cor | Posição / Letra |
+| Pixel | Cor | Função |
 |:---:|-----|:---------------:|
-| **0** | 🟢 Verde    | 1 / A |
-| **1** | 🟡 Amarelo  | 2 / B |
-| **2** | 🔴 Vermelho | 3 / C |
-| **3** | 🔵 Azul     | 4 / D |
-| **4** | ⚪ Branco   | 5 / E |
-| **5–7** | — apagados | reservados (6ª resposta F + 2 pixels de status, no M3) |
+| **0** | 🟢 Verde    | Resposta 1 / A |
+| **1** | 🟡 Amarelo  | Resposta 2 / B |
+| **2** | 🔴 Vermelho | Resposta 3 / C |
+| **3** | 🔵 Azul     | Resposta 4 / D |
+| **4** | ⚪ Branco   | Resposta 5 / E |
+| **5** | 🟣 Magenta  | Resposta 6 / F |
+| **6** | 🟠 Âmbar / 🟢 Verde | Status: conexão (âmbar piscando = reconectando; pulso verde = ocioso) |
+| **7** | 🩵 Ciano   | Status: processamento (piscando = `solving`) |
 
 ```
    ESP32-S3 Super Mini              Barra WS2812 (8 px)
@@ -256,54 +258,50 @@ Um `state` desconhecido é tratado como `idle`, conforme a spec.
 
 ## A linguagem dos LEDs
 
-Não há LED de status dedicado: a saúde da conexão e as respostas compartilham os mesmos 5 LEDs,
-com padrões que não se confundem. **Resposta tem prioridade sobre conexão**, e um `answer` novo
-sempre interrompe a exibição atual.
+Desde a v3.2 a barra tem **dois canais independentes**: os pixels **0–5** carregam só as
+**respostas (A–F)**, e os pixels **6–7** são o **status dedicado** (conexão e processamento).
+Um `answer` novo sempre interrompe a exibição atual; o status nunca interfere na resposta.
 
 ```
 Notação:   ●  aceso fixo      ◐  piscando      ·  apagado
-Ordem:     A  B  C  D  E   →  posições 1 a 5
+Ordem:     A  B  C  D  E  F | S₆ S₇   →  respostas 1–6 | conexão, processamento
+Cores:     A=verde B=amarelo C=vermelho D=azul E=branco F=magenta
 ```
 
-### Conexão — quando não há resposta ativa
+### Status — pixels 6 (conexão) e 7 (processamento)
 
-| Situação | Padrão | |
+| Situação | Pixel | Padrão |
 |---|:---:|---|
-| Conectando / sem WiFi / reconectando | `◐ · · · ◐` | Pontas piscando juntas, ~150 ms |
-| Conectado, ocioso | `◐ · · · ·` | Heartbeat: 1 pulso de ~80 ms a cada ~2 s |
+| Conectando / sem WiFi / reconectando | 6 | Âmbar piscando ~150 ms |
+| Conectado, ocioso | 6 | Heartbeat verde: 1 pulso de ~80 ms a cada ~2 s |
+| `status: solving` | 7 | Ciano piscando ~250 ms, **sem TTL**, até chegar `answer`, `error` ou `idle`. **Não apaga a resposta em exibição** e encerra a janela de silêncio do boot |
+| `status: idle` | 7 | Apagado |
 
-### Processando — evento `status`
+`status: error` usa o padrão de erro nos pixels de resposta (abaixo). Se o stream cair durante um
+`solving`, o ciano é **abortado** (senão a queda ficaria escondida atrás dele); ao reabrir, o
+`status` inicial do servidor ressincroniza.
 
-| `state` | Padrão | |
-|---|:---:|---|
-| `solving` | `· · ◐ · ·` | LED do meio piscando a ~250 ms, **sem TTL**, até chegar `answer`, `error` ou `idle`. Vence uma resposta em exibição e encerra a janela de silêncio do boot |
-| `error` | `◐ ◐ ◐ ◐ ◐` | Padrão de erro: os 5 piscam juntos 3× e voltam ao ocioso |
-| `idle` | — | Encerra o piscar do meio. **Não apaga uma resposta em exibição** — no fluxo normal o `idle` chega logo após o `answer` |
-
-Se o stream cair durante um `solving`, o piscar é **abortado** e os LEDs voltam a sinalizar a
-conexão — do contrário a queda ficaria escondida. Ao reabrir, o `status` inicial ressincroniza.
-
-### Resposta — evento `answer`
+### Resposta — evento `answer` (pixels 0–5)
 
 | Situação | Exemplo | |
 |---|:---:|---|
-| `single` | `· · ● · ·` | 1 LED aceso (a letra), **retido por 12 s** (`LED_HOLD_TTL_MS`), depois volta ao heartbeat |
-| `multiple` | `● · ● · ·` | LEDs das letras acesos simultaneamente, mesmo TTL |
-| `yesno` | `● ◐ ● · ·` | **Simultâneo**: cada afirmação acende seu LED — Sim = fixo, Não = piscando (~350 ms) — mesmo TTL |
-| `dropdown` `ordering` `matching` | `· ● · · ·` → `· · · ● ·` → … | **Sequencial**: acende a posição (1–5) de cada slot, na ordem, em 2 passadas |
-| `questionType == "test"` | `● → ● → ● → ● → ●` | Varredura (chase) A→E, 2×, e volta ao ocioso |
-| `hasData == false` (ilegível) | `◐ ◐ ◐ ◐ ◐` | Os 5 piscam juntos 3× (~250 ms on/off) e apagam |
-| Erro ao parsear o JSON | `◐ ◐ ◐ ◐ ◐` | Mesmo padrão de erro — em vez de falhar em silêncio |
+| `single` | `· · ● · · ·` | 1 pixel aceso (a letra, na sua cor), **retido por 12 s** (`LED_HOLD_TTL_MS`) |
+| `multiple` | `● · ● · · ·` | Pixels das letras acesos simultaneamente, mesmo TTL |
+| `yesno` | `● ◐ ● · · ·` | **Simultâneo**: cada afirmação acende seu pixel — Sim = fixo, Não = piscando (~350 ms) — mesmo TTL |
+| `dropdown` `ordering` `matching` | `· ● · · · ·` → `· · · ● · ·` → … | **Sequencial**: acende a posição (1–6) de cada slot, na ordem, em 2 passadas |
+| `questionType == "test"` | `● → ● → ● → ● → ● → ●` | Varredura (chase) A→F, 2×, e apaga |
+| `hasData == false` (ilegível) | `◐ ◐ ◐ ◐ ◐ ◐` | Os 6 piscam juntos 3× (~250 ms on/off) e apagam |
+| Erro ao parsear o JSON | `◐ ◐ ◐ ◐ ◐ ◐` | Mesmo padrão de erro — em vez de falhar em silêncio |
 
 Toda resposta retida começa com um **blank de ~250 ms** (`LED_HOLD_INTAKE_MS`), o que torna
 visível a chegada de respostas **iguais consecutivas** (ex.: `A` depois `A`).
-Sequências com mais de 5 itens são truncadas para 5, com aviso na serial; slot fora de 1–5 pisca
-os 5 juntos 1× naquele passo e segue.
+Sequências com mais de 6 itens são truncadas para 6, com aviso na serial; slot fora de 1–6 pisca
+os 6 juntos 1× naquele passo e segue.
 
 ### Janela de boot — silêncio até a 1ª resposta
 
-Ao ligar, os LEDs sinalizam conexão/ocioso normalmente por **`LED_BOOT_BLINK_MS` (5 min)**;
-depois entram em **blackout** (`· · · · ·`) até a **1ª resposta** do backend.
+Ao ligar, a barra sinaliza status normalmente por **`LED_BOOT_BLINK_MS` (5 min)**;
+depois entra em **blackout total** (respostas e status apagados) até a **1ª resposta** do backend.
 
 Durante o blackout o stream continua ativo — ping a cada 15 s e logs na serial — **só a saída dos
 LEDs é suprimida**. Qualquer evento `answer` (inclusive `test` ou erro) **ou um `status: solving`**
@@ -321,7 +319,7 @@ Reconecta se **(a)** o socket cair, **(b)** o WiFi cair, ou **(c)** passar `STRE
 1 s → 2 s → 5 s → 10 s → 20 s → 30 s (máx)
 ```
 
-O backoff zera quando o stream reabre. Durante a reconexão, os LEDs mostram `◐ · · · ◐`.
+O backoff zera quando o stream reabre. Durante a reconexão, o pixel de conexão (6) pisca em âmbar.
 
 ---
 
@@ -331,14 +329,14 @@ O backoff zera quando o stream reabre. Durante a reconexão, os LEDs mostram `�
 
 | # | Cenário | Esperado |
 |:--:|---|---|
-| 1 | **Conexão viva** | Serial mostra `[SSE] Stream aberto`; `: ping` a cada 15 s sem reconectar; heartbeat no LED A quando ocioso |
-| 2 | **Evento de teste** (sem custo de IA) | `POST {BASE}/api/exam/solve` com `Test=true` (multipart) → chase A→E em < ~1 s |
-| 3 | **`single` / `multiple`** | 1 LED / vários LEDs acesos e retidos por ~12 s |
-| 4 | **`yesno`** | LEDs das afirmações acesos ao mesmo tempo — Sim fixo, Não piscando |
-| 5 | **Processando (`status`)** | `POST` real (sem `Test`) → o LED do meio pisca imediatamente e durante todo o processamento; ao chegar o `answer`, ele para e a resposta aparece; o `idle` seguinte **não** apaga a resposta. Se falhar, chega `status error` → 5 LEDs piscando 3× |
+| 1 | **Conexão viva** | Serial mostra `[SSE] Stream aberto`; `: ping` a cada 15 s sem reconectar; heartbeat verde no pixel 6 quando ocioso |
+| 2 | **Evento de teste** (sem custo de IA) | `POST {BASE}/api/exam/solve` com `Test=true` (multipart) → chase A→F em < ~1 s |
+| 3 | **`single` / `multiple`** | 1 pixel / vários pixels acesos e retidos por ~12 s |
+| 4 | **`yesno`** | Pixels das afirmações acesos ao mesmo tempo — Sim fixo, Não piscando |
+| 5 | **Processando (`status`)** | `POST` real (sem `Test`) → o pixel 7 pisca ciano imediatamente e durante todo o processamento **sem apagar a resposta em exibição**; ao chegar o `answer`, ele para e a resposta aparece; o `idle` seguinte **não** apaga a resposta. Se falhar, chega `status error` → os 6 pixels de resposta piscando 3× |
 | 6 | **`dropdown` / `ordering` / `matching`** | Sequência acendendo a posição de cada slot |
-| 7 | **Ilegível** | Force `hasData=false` → 5 LEDs piscando juntos 3× |
-| 8 | **Reconexão** | Derrube WiFi/servidor → padrão `◐ · · · ◐` + log de backoff; ao voltar, reconecta e o backoff zera |
+| 7 | **Ilegível** | Force `hasData=false` → os 6 pixels de resposta piscando juntos 3× |
+| 8 | **Reconexão** | Derrube WiFi/servidor → pixel 6 piscando âmbar + log de backoff; ao voltar, reconecta e o backoff zera |
 | 9 | **Heap** | Acompanhe `[HEAP] livre=` (a cada 10 s) — deve permanecer estável após muitos eventos e reconexões |
 
 ---
@@ -360,6 +358,7 @@ O backoff zera quando o stream reabre. Durante a reconexão, os LEDs mostram `�
 
 | Versão | Mudança |
 |:---:|---|
+| **3.2** | LEDs 6+2: 6ª resposta (F, magenta) + pixels 6–7 dedicados a status (conexão/processamento) — `solving` não apaga mais a resposta em exibição |
 | **3.1** | Buffers SSE 4 K → 16 K (fim do descarte silencioso de eventos grandes); `JSON_DOC_SIZE` 4096 e remoção do filtro — o payload inteiro é parseado |
 | **3.0** | Porte para **ESP32-S3 Super Mini** + barra WS2812 de 8 LEDs (GPIO 13) — comportamento idêntico à v2.5 |
 | **2.5** | Robustez: timeout na fase de headers (half-open), parse numérico do status HTTP, validação de slots, logs de `cached`/`reason` — último release com alvo ESP8266 |
