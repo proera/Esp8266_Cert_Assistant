@@ -281,7 +281,7 @@ ou houver proxy reverso terminando TLS.
 - **M1** — porte mecânico (comportamento idêntico; 5 posições nos pixels 0–4).
 - **M2** — destravar memória (buffers 16 K, `JSON_DOC_SIZE` 4096, sem filtro).
 - **M3** — LEDs 6+2 ✅ *concluído (v3.2)*: `LED_COUNT` 5→6, letras A–F, F=magenta,
-  pixel 6 = conexão (âmbar piscando / pulso verde) e pixel 7 = processamento (ciano
+  pixel 6 = conexão (âmbar piscando / pulso violeta) e pixel 7 = processamento (ciano
   piscando). A escada de prioridades encolheu: o `solving` virou canal próprio e não
   apaga mais a resposta em exibição; o `stopProcessing()` condicional (cicatriz da
   v2.4) se dissolveu; o aborto por queda de stream continua; o blackout de boot

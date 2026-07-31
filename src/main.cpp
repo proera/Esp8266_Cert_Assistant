@@ -15,7 +15,7 @@
  * Hardware: ESP32-S3 Super Mini (FH4R2) + barra WS2812 de 8 pixels no
  * GPIO 13. Pixels 0-5 = posições/letras A-F => 1-6, com as cores dos LEDs
  * físicos do D1 Mini + magenta para F. Pixel 6 = conexão (âmbar piscando =
- * (re)conectando; pulso verde = ocioso). Pixel 7 = processamento (ciano
+ * (re)conectando; pulso violeta = ocioso). Pixel 7 = processamento (ciano
  * piscando = solving).
  *
  * Changelog:

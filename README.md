@@ -111,7 +111,7 @@ A barra WS2812 usa **um único pino de dados** (GPIO 13). Cada posição de resp
 | **3** | 🔵 Azul     | Resposta 4 / D |
 | **4** | ⚪ Branco   | Resposta 5 / E |
 | **5** | 🟣 Magenta  | Resposta 6 / F |
-| **6** | 🟠 Âmbar / 🟢 Verde | Status: conexão (âmbar piscando = reconectando; pulso verde = ocioso) |
+| **6** | 🟠 Âmbar / 🟣 Violeta | Status: conexão (âmbar piscando = reconectando; pulso violeta = ocioso) |
 | **7** | 🩵 Ciano   | Status: processamento (piscando = `solving`) |
 
 ```
@@ -273,7 +273,7 @@ Cores:     A=verde B=amarelo C=vermelho D=azul E=branco F=magenta
 | Situação | Pixel | Padrão |
 |---|:---:|---|
 | Conectando / sem WiFi / reconectando | 6 | Âmbar piscando ~150 ms |
-| Conectado, ocioso | 6 | Heartbeat verde: 1 pulso de ~80 ms a cada ~2 s |
+| Conectado, ocioso | 6 | Heartbeat violeta: 1 pulso de ~80 ms a cada ~2 s |
 | `status: solving` | 7 | Ciano piscando ~250 ms, **sem TTL**, até chegar `answer`, `error` ou `idle`. **Não apaga a resposta em exibição** e encerra a janela de silêncio do boot |
 | `status: idle` | 7 | Apagado |
 
@@ -329,7 +329,7 @@ O backoff zera quando o stream reabre. Durante a reconexão, o pixel de conexão
 
 | # | Cenário | Esperado |
 |:--:|---|---|
-| 1 | **Conexão viva** | Serial mostra `[SSE] Stream aberto`; `: ping` a cada 15 s sem reconectar; heartbeat verde no pixel 6 quando ocioso |
+| 1 | **Conexão viva** | Serial mostra `[SSE] Stream aberto`; `: ping` a cada 15 s sem reconectar; heartbeat violeta no pixel 6 quando ocioso |
 | 2 | **Evento de teste** (sem custo de IA) | `POST {BASE}/api/exam/solve` com `Test=true` (multipart) → chase A→F em < ~1 s |
 | 3 | **`single` / `multiple`** | 1 pixel / vários pixels acesos e retidos por ~12 s |
 | 4 | **`yesno`** | Pixels das afirmações acesos ao mesmo tempo — Sim fixo, Não piscando |

@@ -160,7 +160,7 @@ Centraliza **todas** as constantes via `#define`. Nenhuma configuração espalha
 | Janela de boot | `LED_BOOT_BLINK_MS` | 300000 ms (5 min) |
 | HOLD | `LED_HOLD_TTL_MS`, `LED_HOLD_INTAKE_MS`, `LED_YESNO_BLINK_MS` | 12000 ms, 250 ms, 350 ms |
 | Processando | `LED_PROC_BLINK_MS` | 250 ms (pixel 7, ciano) |
-| Pixels de status | `LED_PIX_STATUS_CONN`, `LED_PIX_STATUS_PROC`, `LED_COLOR_STATUS_*` | 6, 7 · âmbar/verde/ciano |
+| Pixels de status | `LED_PIX_STATUS_CONN`, `LED_PIX_STATUS_PROC`, `LED_COLOR_STATUS_*` | 6, 7 · âmbar/violeta/ciano |
 | Test / erro | `LED_CHASE_STEP_MS`, `LED_CHASE_PASSES`, `LED_ERROR_ON_MS`, `LED_ERROR_OFF_MS`, `LED_ERROR_CYCLES` | 120 ms, 2, 250 ms, 250 ms, 3 |
 | Sequências | `LED_SEQ_STEP_MS`, `LED_SEQ_GAP_MS`, `LED_SEQ_BLINK_MS`, `LED_SEQ_PASSES`, `LED_SEQ_ERRBLINK_MS` | 1500 ms, 400 ms, 200 ms, 2, 250 ms |
 | Serial | `SERIAL_BAUD_RATE` | 115200 |
@@ -241,7 +241,7 @@ animações não-bloqueantes: respostas (pixels 0–5, A–F) e status (6 = cone
 | Pixel | Estado | Comportamento |
 |---|---|---|
 | 6 | desconectado | Âmbar piscando (150 ms) |
-| 6 | conectado | Pulso verde curto (80 ms a cada 2 s) |
+| 6 | conectado | Pulso violeta curto (80 ms a cada 2 s) |
 | 7 | `_processing` | Ciano piscando (250 ms), **sem TTL** — até `answer` / `error` / `idle` / queda do stream |
 | 7 | ocioso | Apagado |
 
@@ -411,7 +411,7 @@ ordem de cor GRB). O mapeamento lógico fica nos pixels:
 | 3 | Azul     | Resposta D (posição 4) |
 | 4 | Branco   | Resposta E (posição 5) |
 | 5 | Magenta  | Resposta F (posição 6) |
-| 6 | Âmbar / Verde | Status: conexão (âmbar piscando = (re)conectando; pulso verde = ocioso) |
+| 6 | Âmbar / Violeta | Status: conexão (âmbar piscando = (re)conectando; pulso violeta = ocioso) |
 | 7 | Ciano    | Status: processamento (piscando = solving; apagado = idle) |
 
 Pinos a **evitar** no S3 em expansões futuras: GPIO 0 (strapping/BOOT), 19–20 (USB D-/D+),
@@ -429,7 +429,7 @@ coisas (era `yield()` no ESP8266).
 | Evento | Duração | Descrição |
 |---|---|---|
 | Blink de conexão | 150 ms | Pixel 6 em âmbar ao conectar/reconectar |
-| Pulso ocioso | 80 ms a cada 2 s | Heartbeat verde no pixel 6 |
+| Pulso ocioso | 80 ms a cada 2 s | Heartbeat violeta no pixel 6 |
 | Janela de boot | 5 min | Barra sinaliza antes do blackout total |
 | Processando | 250 ms on/off | Pixel 7 em ciano, sem TTL |
 | Chase (passo) | 120 ms | 2 passadas nos 6 pixels de resposta |

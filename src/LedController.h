@@ -7,7 +7,7 @@
  *   - Pixels 0-5: RESPOSTAS (posições A-F / 1-6), cada uma com a cor do LED
  *     físico que ocupava no D1 Mini (F = magenta; LED_COLOR_* no Config.h).
  *   - Pixel 6: CONEXÃO — âmbar piscando = conectando/reconectando; pulso
- *     verde curto = conectado e ocioso (heartbeat).
+ *     violeta curto = conectado e ocioso (heartbeat).
  *   - Pixel 7: PROCESSAMENTO — ciano piscando = solving; apagado = idle.
  *
  * Desde o M3 a saúde da conexão e o andamento do processamento NÃO disputam

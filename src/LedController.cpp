@@ -128,7 +128,7 @@ void LedController::setConnected(bool connected) {
 // Canal de status: pixel 6 (conexão) + pixel 7 (processamento)
 // ========================================
 void LedController::renderStatus(unsigned long now) {
-  // Pixel 6 — conexão: âmbar piscando enquanto (re)conecta; heartbeat verde
+  // Pixel 6 — conexão: âmbar piscando enquanto (re)conecta; heartbeat violeta
   // discreto (pulso de LED_IDLE_PULSE_MS a cada LED_IDLE_PERIOD_MS) quando ok.
   CRGB conn;
   if (!_connected) {
