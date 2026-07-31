@@ -8,7 +8,7 @@ Uma única conexão HTTP persistente. Zero `delay()` no caminho de renderizaçã
 
 <br>
 
-![Firmware](https://img.shields.io/badge/firmware-v3.2-2ea44f?style=flat-square)
+![Firmware](https://img.shields.io/badge/firmware-v3.3-2ea44f?style=flat-square)
 ![Board](https://img.shields.io/badge/board-ESP32--S3_Super_Mini-E7352C?style=flat-square&logo=espressif&logoColor=white)
 ![Framework](https://img.shields.io/badge/framework-Arduino-00979D?style=flat-square&logo=arduino&logoColor=white)
 ![Build](https://img.shields.io/badge/build-PlatformIO-FF7F00?style=flat-square&logo=platformio&logoColor=white)
@@ -68,7 +68,7 @@ flowchart LR
 | `src/WiFiManager.{h,cpp}` | Conexão WiFi inicial (modo STA, modem sleep desligado) e helpers de status. |
 | `src/SseClient.{h,cpp}` | Abre o `GET`, valida headers, desmonta o `Transfer-Encoding: chunked`, faz o parser SSE linha-a-linha sem bloquear e reconecta com backoff. |
 | `src/LedController.{h,cpp}` | Máquina de estados da barra (6 respostas + 2 status) — todo o tempo medido em `millis()`, nenhum `delay()`. |
-| `src/main.cpp` | Liga os módulos, parseia o JSON (zero-copy) e decide o padrão. |
+| `src/main.cpp` | Liga os módulos e divide o trabalho entre os 2 núcleos: rede/parse na `netTask` (core 0), LEDs na `loop()`/uiTask (core 1), unidas por uma fila de comandos por valor. |
 
 > Detalhamento interno (diagramas de estado, orçamento de memória, decisões de projeto):
 > **[ARCHITECTURE.md](ARCHITECTURE.md)**. Diretrizes para assistentes de IA: **[CLAUDE.md](CLAUDE.md)**.
@@ -358,6 +358,7 @@ O backoff zera quando o stream reabre. Durante a reconexão, o pixel de conexão
 
 | Versão | Mudança |
 |:---:|---|
+| **3.3** | Dual-core: rede/parse na `netTask` (core 0), LEDs na uiTask (core 1) — a animação não congela mais durante `connect()`/reconexões |
 | **3.2** | LEDs 6+2: 6ª resposta (F, magenta) + pixels 6–7 dedicados a status (conexão/processamento) — `solving` não apaga mais a resposta em exibição |
 | **3.1** | Buffers SSE 4 K → 16 K (fim do descarte silencioso de eventos grandes); `JSON_DOC_SIZE` 4096 e remoção do filtro — o payload inteiro é parseado |
 | **3.0** | Porte para **ESP32-S3 Super Mini** + barra WS2812 de 8 LEDs (GPIO 13) — comportamento idêntico à v2.5 |

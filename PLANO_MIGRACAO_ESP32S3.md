@@ -1,6 +1,6 @@
 # Plano de migração — ESP8266 D1 Mini → ESP32-S3 Super Mini
 
-> **Status: em execução.** M0–M3 concluídos (M1 validado em hardware: stream, ping,
+> **Status: em execução.** M0–M4 concluídos (M1 validado em hardware: stream, ping,
 > heartbeat e test chase ok; restam os padrões de resposta reais e reconexão);
 > decisões da seção 6 fechadas em 31/07/2026. A numeração de marcos vigente é a da
 > seção 6 (a seção 4 mantém a numeração original, anterior às decisões).
@@ -286,7 +286,13 @@ ou houver proxy reverso terminando TLS.
   apaga mais a resposta em exibição; o `stopProcessing()` condicional (cicatriz da
   v2.4) se dissolveu; o aborto por queda de stream continua; o blackout de boot
   passou a suprimir a barra inteira.
-- **M4** — split dual-core (antigo M3).
+- **M4** — split dual-core ✅ *concluído (v3.3)*: netTask (core 0) com WiFi + SSE +
+  parse, loop()/uiTask (core 1, tick 5 ms) drenando fila de `LedCommand` por valor.
+  Invariantes: nada de ponteiro na fila (o `_dataBuf` é reescrito no próximo evento)
+  e `LedController` exclusivo da loopTask. Bônus: a animação de conectando roda
+  desde o boot (o `wifiManager.connect()` não segura mais o `setup()`).
+  *(Aceite formal pendente: derrubar o backend e conferir que a animação de
+  reconexão não engasga durante o `connect()` de ~5 s.)*
 - **M5** — robustez restante: `Last-Event-ID` + `retry:`, header `Authorization`.
   *(O timeout de headers half-open e o parse numérico do status HTTP, da lista
   original do M5, já entraram na v2.5 do firmware 8266, antes do porte.)*

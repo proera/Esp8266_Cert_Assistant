@@ -48,22 +48,20 @@ Esp8266_Cert_Assistant/
 
 ```
 ┌──────────────────────────────────────────────────────────────┐
-│                          main.cpp                            │
+│                     main.cpp (v3.3: dual-core)               │
 │                                                              │
-│  setup():                                                    │
-│    leds.begin()                                              │
-│    (sem filtro JSON desde a v3.1/M2)                         │
-│    wifiManager.connect()                                     │
-│    sse.begin(handleAnswer, handleStatus)                     │
+│  setup() [loopTask, core 1]:                                 │
+│    leds.begin() · xQueueCreate(16, LedCommand)               │
+│    xTaskCreatePinnedToCore(netTask, core 0)                  │
 │                                                              │
-│  loop():                                                     │
-│    leds.update()                                             │
-│    sse.loop()                                                │
-│    leds.setConnected(sse.isStreaming())                      │
-│    log periódico do heap                                     │
+│  netTask [core 0 — PODE bloquear]:                           │
+│    wifiManager.connect() · sse.begin(handleAnswer/Status)    │
+│    for(;;){ sse.loop(); saúde do stream na transição }       │
+│    handleAnswer/Status: deserializeJson → LedCommand → fila  │
 │                                                              │
-│  handleAnswer(char* payload):  deserializeJson → padrão LED  │
-│  handleStatus(char* payload):  deserializeJson → padrão LED  │
+│  loop() = uiTask [core 1, tick 5 ms — NUNCA bloqueia]:       │
+│    xQueueReceive → applyLedCommand → leds.*                  │
+│    leds.update() · log periódico do heap                     │
 └───────┬──────────────────┬───────────────────┬───────────────┘
         │                  │                   │
 ┌───────▼───────┐  ┌───────▼────────────┐  ┌───▼───────────────┐
@@ -289,12 +287,24 @@ _bar / _lastMask / _dirty   → framebuffer CRGB[8] + caches do flush()
 
 ### 5.5. `main.cpp`
 
-Responsabilidade: orquestração e parsing JSON.
+Responsabilidade: orquestração, parsing JSON e o split dual-core (v3.3/M4).
 
-- **`setup()`** — Serial, LEDs, WiFi e SSE (com os dois callbacks).
-- **`loop()`** — `leds.update()`, `sse.loop()`, `leds.setConnected(...)`, log de heap, `delay(1)`.
-- **`handleAnswer(char* payload)`** — decide o padrão por `hasData` + `questionType`.
-- **`handleStatus(char* payload)`** — decide o padrão por `state`.
+- **`setup()`** (loopTask, core 1) — Serial, `leds.begin()`, cria a fila de `LedCommand` (16
+  posições) e a `netTask` pinada no core 0.
+- **`netTask()`** (core 0) — `wifiManager.connect()` (bloqueia até 15 s **só esta task**),
+  `sse.begin(...)`, e o laço `sse.loop()` + saúde do stream (enfileirada **só na transição**).
+  Tudo que bloqueia mora aqui: `connect()` TCP (~5 s), `Serial` dos headers.
+- **`loop()` = uiTask** (core 1, tick de 5 ms) — drena a fila (`applyLedCommand()`),
+  `leds.update()`, log de heap. Nunca bloqueia.
+- **`handleAnswer(char* payload)`** (netTask) — decide por `hasData` + `questionType` e enfileira.
+- **`handleStatus(char* payload)`** (netTask) — decide por `state` e enfileira.
+
+**Invariantes do dual-core:**
+
+1. A fila carrega `LedCommand` **por valor** (posições/slots/flags já decodificados) — nunca um
+   ponteiro para o `_dataBuf` do `SseClient`, que é reescrito no próximo evento.
+2. O `LedController` é tocado **exclusivamente** pela loopTask — é isso que dispensa mutex.
+3. Fila cheia → descarta e loga (comandos são só exibição; prender a netTask seria pior).
 
 **Parsing JSON:**
 
@@ -452,7 +462,8 @@ coisas (era `yield()` no ESP8266).
 | **Processando sem TTL, abortado na queda** | O andamento pode demorar; mas sem TTL, uma queda de stream deixaria o LED piscando para sempre |
 | **Blackout pós-boot** | Evita poluição luminosa em uso prolongado sem eventos; encerra em definitivo na 1ª resposta |
 | **Chunk-size sem dígito hex apenas rearma** | Tratá-lo como tamanho 0 dispararia um retry extra e pularia um degrau do backoff |
-| **Todo `millis()`** | Responsividade máxima; o `loop()` roda a milhares de Hz |
+| **Dual-core com fila por valor (v3.3)** | O que bloqueia (connect TCP ~5 s, WiFi 15 s, Serial) mora na netTask/core 0; a animação roda na loopTask/core 1 e nunca engasga. Comandos por valor + LedController exclusivo da loopTask = zero mutex |
+| **Todo `millis()`** | Responsividade máxima; a uiTask roda num tick de 5 ms |
 | **Backoff progressivo** | Evita martelar o backend com reconexões imediatas |
 
 ---
@@ -467,10 +478,12 @@ coisas (era `yield()` no ESP8266).
 6. **NÃO reduzir o log de headers** de volta a "só a linha de status".
 7. **NÃO voltar o "processando" para os pixels de resposta** — o canal separado (pixel 7) é o que
    permite ao `solving`/`idle` nunca interferir na resposta em exibição.
-8. **NÃO adicionar `delay()` no caminho de renderização** — os `delay(1)` do loop/parser são o
-   tick do FreeRTOS (ex-`yield()`) e **não** devem voltar a ser `yield()`.
+8. **NÃO adicionar `delay()` no caminho de renderização** — os `delay()` de tick (5 ms na uiTask,
+   1 ms na netTask/parser) são o tick do FreeRTOS (ex-`yield()`) e **não** devem voltar a ser `yield()`.
 9. O rádio do ESP32-S3 opera apenas em WiFi **2,4 GHz**.
-10. `monitor_speed` no `platformio.ini` deve bater com `SERIAL_BAUD_RATE` (115200).
+10. **NÃO enfileirar ponteiros na fila de LED** (só `LedCommand` por valor) e **NÃO chamar `leds.*`
+    fora da loopTask** — são os dois invariantes que sustentam o dual-core sem mutex.
+11. `monitor_speed` no `platformio.ini` deve bater com `SERIAL_BAUD_RATE` (115200).
 
 ---
 

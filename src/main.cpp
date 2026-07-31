@@ -1,7 +1,7 @@
 /*
  * Sistema CertMind - Cliente de Stream ESP32-S3 (Super Mini)
  *
- * Versão: 3.2
+ * Versão: 3.3
  *
  * Descrição: Consome o stream SSE da API CertMind por UMA conexão HTTP
  * persistente (GET, texto claro, sem TLS) e aciona os LEDs da barra WS2812
@@ -19,6 +19,17 @@
  * piscando = solving).
  *
  * Changelog:
+ *   3.3 - Split dual-core (M4 do plano de migração). A rede (WiFi + sse.loop
+ *         + parse do JSON) sai da loopTask e vai para a netTask, pinada no
+ *         core 0 — os pontos que bloqueiam (connect() TCP de até ~5 s,
+ *         wifiManager.connect() de até 15 s no boot, Serial dos headers)
+ *         deixam de congelar a animação. A loopTask (core 1) vira a uiTask:
+ *         drena uma fila de LedCommand e roda leds.update() num tick de 5 ms.
+ *         Invariantes: a fila carrega comandos POR VALOR (nunca ponteiro para
+ *         o _dataBuf, que é reescrito no próximo evento) e o LedController é
+ *         tocado exclusivamente pela loopTask. A saúde do stream é enfileirada
+ *         só na transição. Bônus: a animação de "conectando" agora roda desde
+ *         o boot (antes o wifiManager.connect() bloqueante segurava o setup).
  *   3.2 - LEDs 6+2 (M3 do plano de migração). As respostas ganham a 6ª
  *         posição (F = magenta) e os pixels 6-7 viram um canal de status
  *         dedicado: conexão no 6, processamento no 7. A escada de prioridades
@@ -113,12 +124,84 @@ WiFiManager wifiManager;
 LedController leds;
 SseClient sse;
 
-// Documento JSON reutilizado — global para não pesar na pilha da loopTask.
-// Sem filtro desde o M2: com 4096 bytes de pool e parse zero-copy, o payload
-// inteiro (incluindo um eventual explanation) cabe sem descartar nada.
+// Documento JSON reutilizado — global para não pesar na pilha da netTask
+// (única task que parseia). Sem filtro desde o M2: com 4096 bytes de pool e
+// parse zero-copy, o payload inteiro cabe sem descartar nada.
 StaticJsonDocument<JSON_DOC_SIZE> g_doc;
 
 unsigned long g_lastHeapLog = 0;
+
+// ========================================
+// Split dual-core (M4): netTask (core 0) -> fila -> loop()/uiTask (core 1)
+// ========================================
+// A netTask roda WiFi + sse.loop() + parse do JSON e PODE bloquear (o
+// connect() TCP segura até ~5 s; o wifiManager.connect() do boot, até 15 s).
+// A loopTask (core 1) drena a fila e roda leds.update() num tick curto — a
+// animação nunca engasga.
+//
+// INVARIANTES (é aqui que nascem corridas se alguém relaxar):
+//   1. A fila carrega LedCommand POR VALOR, com os dados já decodificados.
+//      NUNCA enfileirar um ponteiro para o payload (_dataBuf do SseClient):
+//      o buffer é reescrito no próximo evento — use-after-write clássico.
+//   2. O LedController é tocado EXCLUSIVAMENTE pela loopTask (applyLedCommand
+//      + leds.update()). Nenhum handler chama leds.* diretamente.
+enum LedCmdType : uint8_t {
+  LED_CMD_SINGLE,      // data[0] = posição 1..6
+  LED_CMD_MULTIPLE,    // data[0..n-1] = posições
+  LED_CMD_YESNO,       // data[0..n-1] = flags (0/1)
+  LED_CMD_SLOTS,       // data[0..n-1] = slots (0 = inválido)
+  LED_CMD_TEST,        // chase
+  LED_CMD_ERROR,       // padrão de erro
+  LED_CMD_PROC_ON,     // status solving
+  LED_CMD_PROC_OFF,    // status idle / desconhecido
+  LED_CMD_CONNECTED,   // value = saúde do stream
+};
+
+struct LedCommand {
+  uint8_t type;             // LedCmdType
+  uint8_t n;                // itens válidos em data[]
+  uint8_t data[LED_COUNT];  // posições / slots / flags, por valor
+  bool value;               // LED_CMD_CONNECTED
+};
+
+static QueueHandle_t g_ledQueue = nullptr;
+
+// Envia sem bloquear: comandos são só exibição, e uma fila cheia (16 posições
+// com consumidor a 5 ms) indicaria a uiTask travada — descartar + logar é
+// melhor do que prender a netTask.
+static void sendLedCommand(const LedCommand& cmd) {
+  if (xQueueSend(g_ledQueue, &cmd, 0) != pdTRUE) {
+    Serial.println(F("[LED] fila cheia — comando descartado"));
+  }
+}
+
+static void sendSimpleLedCommand(uint8_t type) {
+  LedCommand cmd = {};
+  cmd.type = type;
+  sendLedCommand(cmd);
+}
+
+// Consumidor (roda SÓ na loopTask): traduz o comando em chamadas ao LedController.
+static void applyLedCommand(const LedCommand& cmd) {
+  switch (cmd.type) {
+    case LED_CMD_SINGLE:   leds.showSingle(cmd.data[0]);        break;
+    case LED_CMD_MULTIPLE: leds.showMultiple(cmd.data, cmd.n);  break;
+    case LED_CMD_YESNO: {
+      bool flags[LED_COUNT];
+      for (uint8_t i = 0; i < cmd.n && i < LED_COUNT; i++) {
+        flags[i] = cmd.data[i] != 0;
+      }
+      leds.showYesNo(flags, cmd.n);
+      break;
+    }
+    case LED_CMD_SLOTS:     leds.showSlots(cmd.data, cmd.n);    break;
+    case LED_CMD_TEST:      leds.showTestChase();               break;
+    case LED_CMD_ERROR:     leds.showError();                   break;
+    case LED_CMD_PROC_ON:   leds.showProcessing();              break;
+    case LED_CMD_PROC_OFF:  leds.stopProcessing();              break;
+    case LED_CMD_CONNECTED: leds.setConnected(cmd.value);       break;
+  }
+}
 
 // ========================================
 // Decisão de LEDs a partir do payload do evento "answer"
@@ -126,7 +209,8 @@ unsigned long g_lastHeapLog = 0;
 // payload é o buffer mutável do SseClient: o ArduinoJson parseia em zero-copy
 // (chaves/strings apontam para o buffer, sem cópia no pool). As strings extraídas
 // (ex.: answerText) são válidas durante toda esta função, pois o buffer só é
-// reescrito no próximo evento.
+// reescrito no próximo evento. Roda na netTask: daqui só saem LedCommand por
+// valor — nada de tocar no LedController nem de enfileirar ponteiros.
 void handleAnswer(char* payload) {
   g_doc.clear();
   DeserializationError err = deserializeJson(g_doc, payload);
@@ -136,7 +220,7 @@ void handleAnswer(char* payload) {
     // sinaliza nos próprios LEDs que um evento chegou mas não pôde ser exibido.
     Serial.print(F("[JSON] Erro ao parsear: "));
     Serial.println(err.c_str());
-    leds.showError();
+    sendSimpleLedCommand(LED_CMD_ERROR);
     return;
   }
 
@@ -166,42 +250,38 @@ void handleAnswer(char* payload) {
   // 1) test => varredura de conectividade (não é resposta real).
   if (strcmp(qt, "test") == 0) {
     Serial.println(F("[ANSWER] evento de teste -> chase A->F"));
-    leds.showTestChase();
+    sendSimpleLedCommand(LED_CMD_TEST);
     return;
   }
 
   // 2) ilegível => padrão de erro.
   if (!hasData) {
     Serial.println(F("[ANSWER] questão ilegível -> erro (pixels de resposta piscando)"));
-    leds.showError();
+    sendSimpleLedCommand(LED_CMD_ERROR);
     return;
   }
 
   // 3) single / multiple => letras.
   if (strcmp(qt, "single") == 0 || strcmp(qt, "multiple") == 0) {
     JsonArray letters = g_doc["letters"];
-    uint8_t pos[LED_COUNT];
-    uint8_t n = 0;
+    LedCommand cmd = {};
     for (JsonVariant v : letters) {
       const char* s = v.as<const char*>();
       if (s && s[0] && !s[1]) {  // exatamente 1 caractere
         char c = toupper((unsigned char)s[0]);
         if (c >= 'A' && c < 'A' + LED_COUNT) {  // A..F (6 posições desde o M3)
-          pos[n++] = (uint8_t)(c - 'A' + 1);
-          if (n >= LED_COUNT) break;
+          cmd.data[cmd.n++] = (uint8_t)(c - 'A' + 1);
+          if (cmd.n >= LED_COUNT) break;
         }
       }
     }
-    if (n == 0) {
+    if (cmd.n == 0) {
       Serial.println(F("[ANSWER] letras vazias/inválidas -> erro"));
-      leds.showError();
+      sendSimpleLedCommand(LED_CMD_ERROR);
       return;
     }
-    if (strcmp(qt, "single") == 0) {
-      leds.showSingle(pos[0]);
-    } else {
-      leds.showMultiple(pos, n);
-    }
+    cmd.type = (strcmp(qt, "single") == 0) ? LED_CMD_SINGLE : LED_CMD_MULTIPLE;
+    sendLedCommand(cmd);
     return;
   }
 
@@ -209,11 +289,11 @@ void handleAnswer(char* payload) {
   if (strcmp(qt, "yesno") == 0) {
     int slotCount = g_doc["slotCount"] | 0;
     JsonArray flagsArr = g_doc["flags"];
-    bool flags[LED_COUNT];
-    uint8_t n = 0;
+    LedCommand cmd = {};
+    cmd.type = LED_CMD_YESNO;
     for (JsonVariant v : flagsArr) {
-      if (n >= LED_COUNT) break;
-      flags[n++] = v.as<bool>();
+      if (cmd.n >= LED_COUNT) break;
+      cmd.data[cmd.n++] = v.as<bool>() ? 1 : 0;
     }
     if (slotCount > LED_COUNT) {
       Serial.print(F("[ANSWER] yesno com slotCount="));
@@ -222,7 +302,7 @@ void handleAnswer(char* payload) {
       Serial.print(LED_COUNT);
       Serial.println(F(" primeiras (truncado)"));
     }
-    leds.showYesNo(flags, n);
+    sendLedCommand(cmd);
     return;
   }
 
@@ -231,10 +311,10 @@ void handleAnswer(char* payload) {
       strcmp(qt, "matching") == 0) {
     int slotCount = g_doc["slotCount"] | 0;
     JsonArray slotsArr = g_doc["slots"];
-    uint8_t slots[LED_COUNT];
-    uint8_t n = 0;
+    LedCommand cmd = {};
+    cmd.type = LED_CMD_SLOTS;
     for (JsonVariant v : slotsArr) {
-      if (n >= LED_COUNT) break;
+      if (cmd.n >= LED_COUNT) break;
       // Validar ANTES de estreitar: (uint8_t)257 vira 1 e seria exibido como a
       // posição 1, com toda a confiança, em vez de sinalizar dado inválido.
       // Fora da faixa vira 0, que showSlots() já trata como slot inválido.
@@ -244,7 +324,7 @@ void handleAnswer(char* payload) {
         Serial.print(F("[ANSWER] slot fora da faixa: "));
         Serial.println(raw);
       }
-      slots[n++] = inRange ? (uint8_t)raw : 0;
+      cmd.data[cmd.n++] = inRange ? (uint8_t)raw : 0;
     }
     if (slotCount > LED_COUNT) {
       Serial.print(F("[ANSWER] slots com slotCount="));
@@ -253,14 +333,14 @@ void handleAnswer(char* payload) {
       Serial.print(LED_COUNT);
       Serial.println(F(" primeiros (truncado)"));
     }
-    leds.showSlots(slots, n);
+    sendLedCommand(cmd);
     return;
   }
 
   // questionType desconhecido => trata como erro.
   Serial.print(F("[ANSWER] questionType desconhecido: "));
   Serial.println(qt);
-  leds.showError();
+  sendSimpleLedCommand(LED_CMD_ERROR);
 }
 
 // ========================================
@@ -293,7 +373,7 @@ void handleStatus(char* payload) {
 
   if (strcmp(state, "solving") == 0) {
     // Canal próprio (pixel 7): sinaliza sem apagar a resposta em exibição.
-    leds.showProcessing();
+    sendSimpleLedCommand(LED_CMD_PROC_ON);
     return;
   }
 
@@ -309,12 +389,44 @@ void handleStatus(char* payload) {
       Serial.print(F(")"));
     }
     Serial.println(F(" -> erro (pixels de resposta piscando)"));
-    leds.showError();
+    sendSimpleLedCommand(LED_CMD_ERROR);
     return;
   }
 
   // idle — e qualquer state desconhecido, que a spec manda tratar como idle.
-  leds.stopProcessing();
+  sendSimpleLedCommand(LED_CMD_PROC_OFF);
+}
+
+// ========================================
+// netTask (core 0): WiFi + stream + parse — pode bloquear
+// ========================================
+void netTask(void*) {
+  // Conexão WiFi inicial (bloqueia até 15 s — só esta task; a animação de
+  // "conectando" já roda na loopTask desde o boot).
+  wifiManager.connect();
+  WiFi.setAutoReconnect(true);
+
+  sse.begin(handleAnswer, handleStatus);
+  Serial.println(F("✓ netTask ativa. Aguardando stream...\n"));
+
+  // Saúde do stream: enfileirada SÓ na transição (o estado inicial false já é
+  // o default do LedController), para não inundar a fila a cada iteração.
+  bool lastStreaming = false;
+
+  for (;;) {
+    sse.loop();
+
+    bool streaming = sse.isStreaming();
+    if (streaming != lastStreaming) {
+      lastStreaming = streaming;
+      LedCommand cmd = {};
+      cmd.type = LED_CMD_CONNECTED;
+      cmd.value = streaming;
+      sendLedCommand(cmd);
+    }
+
+    delay(1);  // tick do FreeRTOS (alimenta o WDT; yield() não faria isso)
+  }
 }
 
 // ========================================
@@ -327,43 +439,41 @@ void setup() {
   Serial.println(F("\n\n"));
   Serial.println(F("╔═══════════════════════════════════════════════╗"));
   Serial.println(F("║  CertMind - Cliente de Stream ESP32-S3        ║"));
-  Serial.println(F("║  Versão: 3.2 (SSE)                            ║"));
+  Serial.println(F("║  Versão: 3.3 (SSE)                            ║"));
   Serial.println(F("╚═══════════════════════════════════════════════╝"));
 
   leds.begin();
 
-  // Conexão WiFi inicial (bloqueante apenas no boot); auto-reconnect cuida do resto.
-  wifiManager.connect();
-  WiFi.setAutoReconnect(true);
+  g_ledQueue = xQueueCreate(16, sizeof(LedCommand));
 
-  sse.begin(handleAnswer, handleStatus);
+  // Rede no core 0 (junto do driver WiFi); a loopTask do Arduino roda no
+  // core 1 e fica exclusiva da animação.
+  xTaskCreatePinnedToCore(netTask, "net", 8192, nullptr, 1, nullptr, 0);
 
-  Serial.println(F("✓ Setup concluído. Aguardando stream...\n"));
+  Serial.println(F("✓ Setup concluído (uiTask no core 1, netTask no core 0)\n"));
 }
 
 // ========================================
-// LOOP (não-bloqueante)
+// LOOP = uiTask (core 1): fila -> LedController, nunca bloqueia
 // ========================================
 void loop() {
   unsigned long now = millis();
 
-  // 1) Avança a animação dos LEDs.
+  // 1) Aplica os comandos pendentes (por valor, vindos da netTask).
+  LedCommand cmd;
+  while (xQueueReceive(g_ledQueue, &cmd, 0) == pdTRUE) {
+    applyLedCommand(cmd);
+  }
+
+  // 2) Avança a animação dos LEDs.
   leds.update();
 
-  // 2) Gerencia o stream (conexão/parsing/reconexão).
-  sse.loop();
-
-  // 3) Reflete a saúde do stream nos LEDs (só afeta quando não há resposta ativa).
-  leds.setConnected(sse.isStreaming());
-
-  // 4) Log periódico do heap (detecção de vazamento).
+  // 3) Log periódico do heap (detecção de vazamento).
   if (now - g_lastHeapLog > STREAM_HEAP_LOG_MS) {
     g_lastHeapLog = now;
     Serial.print(F("[HEAP] livre="));
     Serial.println(ESP.getFreeHeap());
   }
 
-  // Sob FreeRTOS, yield() não alimenta o WDT nem cede o tick — delay(1) faz
-  // as duas coisas (e dá ao IDLE task a chance de rodar).
-  delay(1);
+  delay(5);  // tick da UI: 5 ms é folga p/ o blink mais rápido (150 ms)
 }
