@@ -8,14 +8,7 @@ Firmware para **ESP32-S3 Super Mini** (FH4R2: 4 MB flash quad + 2 MB PSRAM quad)
 
 ## Comandos
 
-```bash
-pio run                 # Compila o firmware
-pio run --target upload # Compila e grava via USB-C (porta fixada em COM6 no platformio.ini)
-pio device monitor      # Monitor serial (115200 baud, USB-CDC nativo)
-pio run --target clean  # Limpa artefatos de build
-```
-
-Não há testes automatizados — é firmware embarcado validado em hardware via Serial Monitor. Para capturar o boot (que ocorre antes de o monitor abrir), force um reset com o monitor já conectado (pulso no RTS). O bootloader ROM do S3 **não fala pelo USB-CDC**: as primeiras linhas do ROM não aparecem, mas o log do firmware sai completo.
+Build/upload/monitor são os comandos `pio` padrão (porta e baud fixados no `platformio.ini`). Não há testes automatizados — é firmware embarcado validado em hardware via Serial Monitor. Para capturar o boot (que ocorre antes de o monitor abrir), force um reset com o monitor já conectado (pulso no RTS). O bootloader ROM do S3 **não fala pelo USB-CDC**: as primeiras linhas do ROM não aparecem, mas o log do firmware sai completo.
 
 ## Arquitetura
 
