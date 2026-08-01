@@ -160,8 +160,8 @@ Centraliza **todas** as constantes via `#define`. Nenhuma configuração espalha
 | Conexão / ocioso | `LED_CONN_BLINK_MS`, `LED_IDLE_PERIOD_MS`, `LED_IDLE_PULSE_MS` | 150 ms, 2000 ms, 80 ms |
 | Janela de boot | `LED_BOOT_BLINK_MS` | 300000 ms (5 min) |
 | HOLD | `LED_HOLD_TTL_MS`, `LED_HOLD_INTAKE_MS`, `LED_YESNO_BLINK_MS` | 12000 ms, 250 ms, 350 ms |
-| Processando | `LED_PROC_BLINK_MS` | 250 ms (pixel 7, ciano) |
-| Pixels de status | `LED_PIX_STATUS_CONN`, `LED_PIX_STATUS_PROC`, `LED_COLOR_STATUS_*` | 6, 7 · âmbar/violeta/ciano |
+| Processando (varredura) | `LED_SOLVE_COLOR`, `LED_SOLVE_SPAN`, `LED_SOLVE_STEP_MS`, `LED_SOLVE_TRAIL`, `LED_SOLVE_FADE` | vermelho, 8 px (barra inteira), 80 ms, 3, 110 |
+| Pixels de status | `LED_PIX_STATUS_CONN`, `LED_PIX_STATUS_PROC`, `LED_COLOR_STATUS_*` | 6, 7 (apagado fora do solving) · âmbar/violeta |
 | Test / erro | `LED_CHASE_STEP_MS`, `LED_CHASE_PASSES`, `LED_ERROR_ON_MS`, `LED_ERROR_OFF_MS`, `LED_ERROR_CYCLES` | 120 ms, 2, 250 ms, 250 ms, 3 |
 | Sequências | `LED_SEQ_STEP_MS`, `LED_SEQ_GAP_MS`, `LED_SEQ_BLINK_MS`, `LED_SEQ_PASSES`, `LED_SEQ_ERRBLINK_MS` | 1500 ms, 400 ms, 200 ms, 2, 250 ms |
 | Serial | `SERIAL_BAUD_RATE` | 115200 |
@@ -237,21 +237,27 @@ animações não-bloqueantes: respostas (pixels 0–5, A–F) e status (6 = cone
 | `MODE_ERROR` | `showError()` | Os 6 piscam juntos 3× (250 ms on/off) | Fim da animação |
 | `MODE_SEQ` | `showSlots()` | Passo a passo com gaps, 2 passadas | Fim da animação |
 
-**Canal de status (pixels 6–7, `renderStatus()` — roda sempre, mesmo com resposta ativa):**
+**Canal de status (`renderStatus()` — roda sempre que não há solving ativo):**
 
 | Pixel | Estado | Comportamento |
 |---|---|---|
 | 6 | desconectado | Âmbar piscando (150 ms) |
-| 6 | conectado | Pulso violeta curto (80 ms a cada 2 s) |
-| 7 | `_processing` | Ciano piscando (250 ms), **sem TTL** — até `answer` / `error` / `idle` / queda do stream |
-| 7 | ocioso | Apagado |
+| 6 | conectado | Pulso violeta curto (80 ms a cada 2 s) — suprimido enquanto há resposta em exibição |
+| 7 | — | Apagado fora do solving (a varredura usa a barra inteira) |
 
-**Prioridade de exibição (encolheu na v3.2 — status não disputa mais pixels com resposta):**
+**Processando (`_processing`, `renderSolving()` — desde a v3.6):** varredura vermelha vai-e-vem
+(estilo Larson scanner) na barra inteira (8 pixels), com rastro em fading (`LED_SOLVE_TRAIL`
+pixels decaídos por `LED_SOLVE_FADE` a cada passo de `LED_SOLVE_STEP_MS`), **sem TTL** — até
+`answer` / `error` / `idle` / queda do stream. Toma a barra enquanto durar; a resposta em
+exibição (se o TTL não expirou) e o pixel de conexão reassumem ao terminar.
 
-1. Um `answer` novo sempre interrompe a exibição atual (nos pixels de resposta).
-2. `test` / erro / sequências tocam e apagam.
-3. `single` / `multiple` / `yesno` ficam retidos por `LED_HOLD_TTL_MS` e apagam.
-4. Blackout de boot suprime a barra inteira (respostas **e** status) até a 1ª resposta.
+**Prioridade de exibição:**
+
+1. A varredura de solving, enquanto ativa, sobrepõe a barra inteira.
+2. Um `answer` novo sempre interrompe a exibição atual (nos pixels de resposta).
+3. `test` / erro / sequências tocam e apagam.
+4. `single` / `multiple` / `yesno` ficam retidos por `LED_HOLD_TTL_MS` e apagam.
+5. Blackout de boot suprime a barra inteira (respostas **e** status) até a 1ª resposta.
 
 **Propriedades importantes:**
 
@@ -412,8 +418,8 @@ ordem de cor GRB). O mapeamento lógico fica nos pixels:
 | 3 | Azul     | Resposta D (posição 4) |
 | 4 | Branco   | Resposta E (posição 5) |
 | 5 | Magenta  | Resposta F (posição 6) |
-| 6 | Âmbar / Violeta | Status: conexão (âmbar piscando = (re)conectando; pulso violeta = ocioso) |
-| 7 | Ciano    | Status: processamento (piscando = solving; apagado = idle) |
+| 6 | Âmbar / Violeta | Status: conexão (âmbar piscando = (re)conectando; pulso violeta = ocioso, suprimido com resposta em exibição) |
+| 7 | —        | Apagado fora do solving (a varredura vermelha usa a barra inteira) |
 
 Pinos a **evitar** no S3 em expansões futuras: GPIO 0 (strapping/BOOT), 19–20 (USB D-/D+),
 26–32 (flash SPI), 45–46 (strapping), 48 (WS2812 onboard).
@@ -432,7 +438,7 @@ coisas (era `yield()` no ESP8266).
 | Blink de conexão | 150 ms | Pixel 6 em âmbar ao conectar/reconectar |
 | Pulso ocioso | 80 ms a cada 2 s | Heartbeat violeta no pixel 6 |
 | Janela de boot | 5 min | Barra sinaliza antes do blackout total |
-| Processando | 250 ms on/off | Pixel 7 em ciano, sem TTL |
+| Processando | 80 ms/pixel | Varredura vermelha vai-e-vem na barra inteira com rastro, sem TTL |
 | Chase (passo) | 120 ms | 2 passadas nos 6 pixels de resposta |
 | Erro | 250 ms on/off × 3 | Os 6 pixels de resposta juntos |
 | Sequência (passo) | 1500 ms + gap de 400 ms | 2 passadas |

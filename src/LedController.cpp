@@ -55,7 +55,7 @@ void LedController::writeMask(uint8_t mask) {
   _dirty = true;
 }
 
-void LedController::setStatusPixel(uint8_t pix, const CRGB& c) {
+void LedController::setPixel(uint8_t pix, const CRGB& c) {
   if (_bar[pix] == c) {
     return;
   }
@@ -90,8 +90,16 @@ void LedController::update() {
       _blackoutAnnounced = true;
     }
     allOff();
-    setStatusPixel(LED_PIX_STATUS_CONN, CRGB::Black);
-    setStatusPixel(LED_PIX_STATUS_PROC, CRGB::Black);
+    setPixel(LED_PIX_STATUS_CONN, CRGB::Black);
+    setPixel(LED_PIX_STATUS_PROC, CRGB::Black);
+    flush();
+    return;
+  }
+
+  // Solving: a varredura vermelha toma a barra inteira (8 pixels) enquanto
+  // durar; o que estiver em exibição reassume quando terminar.
+  if (_processing) {
+    renderSolving(now);
     flush();
     return;
   }
@@ -125,42 +133,74 @@ void LedController::setConnected(bool connected) {
 }
 
 // ========================================
-// Canal de status: pixel 6 (conexão) + pixel 7 (processamento)
+// Canal de status: pixel 6 (conexão); pixel 7 fica apagado
 // ========================================
 void LedController::renderStatus(unsigned long now) {
   // Pixel 6 — conexão: âmbar piscando enquanto (re)conecta; heartbeat violeta
   // discreto (pulso de LED_IDLE_PULSE_MS a cada LED_IDLE_PERIOD_MS) quando ok.
+  // Com uma resposta em exibição o heartbeat fica suprimido (o pulso ao lado
+  // da resposta desviava a leitura); a queda da conexão continua sinalizada.
   CRGB conn;
   if (!_connected) {
     bool on = ((now / LED_CONN_BLINK_MS) % 2) == 0;
     conn = on ? CRGB(LED_COLOR_STATUS_CONN) : CRGB::Black;
+  } else if (_answerActive) {
+    conn = CRGB::Black;
   } else {
     unsigned long phase = now % LED_IDLE_PERIOD_MS;
     conn = (phase < LED_IDLE_PULSE_MS) ? CRGB(LED_COLOR_STATUS_OK) : CRGB::Black;
   }
-  setStatusPixel(LED_PIX_STATUS_CONN, conn);
+  setPixel(LED_PIX_STATUS_CONN, conn);
 
-  // Pixel 7 — processamento: ciano piscando enquanto houver solving.
-  CRGB proc = CRGB::Black;
-  if (_processing) {
-    bool on = ((now / LED_PROC_BLINK_MS) % 2) == 0;
-    proc = on ? CRGB(LED_COLOR_STATUS_PROC) : CRGB::Black;
-  }
-  setStatusPixel(LED_PIX_STATUS_PROC, proc);
+  // Pixel 7 — apagado fora do solving (durante ele update() nem chega aqui:
+  // desvia para renderSolving, que varre a barra inteira).
+  setPixel(LED_PIX_STATUS_PROC, CRGB::Black);
 }
 
 // ========================================
-// D) Processando (status solving): pixel 7 até answer / error / idle
+// D) Processando (status solving): varredura vermelha vai-e-vem com rastro
+//    na barra inteira, até answer / error / idle
 // ========================================
 void LedController::showProcessing() {
+  if (!_processing) {
+    _solveStart = millis();  // eventos "solving" repetidos não reiniciam a varredura
+  }
   _processing = true;
   _firstAnswerReceived = true;  // encerra o blackout pós-boot, se ativo
 }
 
+void LedController::renderSolving(unsigned long now) {
+  const uint8_t span = LED_SOLVE_SPAN;
+  const uint8_t period = 2 * (span - 1);  // ida + volta, sem repetir as pontas
+  unsigned long step = (now - _solveStart) / LED_SOLVE_STEP_MS;
+
+  // Brilho por pixel: a cabeça (passo atual) a 255 e cada passo anterior
+  // decaído por LED_SOLVE_FADE — é o rastro. O max() resolve a sobreposição
+  // quando a cabeça inverte o sentido e passa por cima do próprio rastro.
+  uint8_t level[LED_SOLVE_SPAN] = {0};
+  uint8_t bright = 255;
+  for (uint8_t k = 0; k <= LED_SOLVE_TRAIL && k <= step; k++) {
+    uint8_t ph = (uint8_t)((step - k) % period);
+    uint8_t pos = (ph < span) ? ph : (uint8_t)(period - ph);
+    if (bright > level[pos]) level[pos] = bright;
+    bright = scale8(bright, LED_SOLVE_FADE);
+  }
+
+  for (uint8_t i = 0; i < span; i++) {
+    CRGB c(LED_SOLVE_COLOR);
+    c.nscale8(level[i]);
+    setPixel(i, c);
+  }
+  // A varredura escreve os pixels de resposta por fora do writeMask(): o
+  // cache precisa ser invalidado para o canal de resposta redesenhar ao
+  // reassumir (0xFF = sentinel de "força retransmissão").
+  _lastMask = 0xFF;
+}
+
 void LedController::stopProcessing() {
-  // Canal independente: encerrar o processando nunca toca na resposta em
-  // exibição (era esta a razão do condicional que existia até a v3.1, quando
-  // status e resposta dividiam os mesmos 5 LEDs).
+  // Encerrar o solving não mexe no estado da resposta: se havia uma em
+  // exibição (TTL ainda correndo), ela reassume os pixels 0-5 no próximo
+  // update(); o pixel de conexão volta junto.
   _processing = false;
 }
 

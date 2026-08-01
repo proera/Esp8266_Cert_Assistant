@@ -1,7 +1,7 @@
 /*
  * Sistema CertMind - Cliente de Stream ESP32-S3 (Super Mini)
  *
- * Versão: 3.5
+ * Versão: 3.6
  *
  * Descrição: Consome o stream SSE da API CertMind por UMA conexão HTTP
  * persistente (GET, texto claro, sem TLS) e aciona os LEDs da barra WS2812
@@ -15,10 +15,20 @@
  * Hardware: ESP32-S3 Super Mini (FH4R2) + barra WS2812 de 8 pixels no
  * GPIO 13. Pixels 0-5 = posições/letras A-F => 1-6, com as cores dos LEDs
  * físicos do D1 Mini + magenta para F. Pixel 6 = conexão (âmbar piscando =
- * (re)conectando; pulso violeta = ocioso). Pixel 7 = processamento (ciano
- * piscando = solving).
+ * (re)conectando; pulso violeta = ocioso, suprimido com resposta em
+ * exibição). O processamento (solving) é uma varredura vermelha vai-e-vem
+ * com rastro na barra inteira; o pixel 7 fica apagado fora dela.
  *
  * Changelog:
+ *   3.6 - Animação de solving: o pisca ciano do pixel 7 vira uma varredura
+ *         vermelha vai-e-vem (estilo Larson scanner) na barra inteira (8
+ *         pixels), com rastro em fading atrás da cabeça. A varredura toma a
+ *         barra enquanto dura o solving — a resposta em exibição (se o TTL
+ *         não expirou) e o pixel de conexão reassumem ao terminar; fora do
+ *         solving o pixel 7 fica apagado. O aborto na queda do stream
+ *         continua igual. Bônus: o heartbeat violeta de ocioso (pixel 6) é
+ *         suprimido enquanto uma resposta está em exibição, para não
+ *         disputar atenção com ela.
  *   3.5 - OTA + configuração em NVS (M6 do plano de migração). Gravação pela
  *         rede via ArduinoOTA/espota (hostname certmind-s3.local, senha em
  *         Config.h; pixel de processamento pisca durante o update, via fila).
@@ -392,7 +402,8 @@ void handleStatus(char* payload) {
   Serial.println(activeSolves);
 
   if (strcmp(state, "solving") == 0) {
-    // Canal próprio (pixel 7): sinaliza sem apagar a resposta em exibição.
+    // Varredura vermelha na barra inteira até answer / error / idle; a
+    // resposta em exibição reassume quando o solving termina.
     sendSimpleLedCommand(LED_CMD_PROC_ON);
     return;
   }
@@ -420,8 +431,8 @@ void handleStatus(char* payload) {
 // ========================================
 // OTA (M6): gravação pela rede, tocada pela netTask
 // ========================================
-// Os callbacks rodam na netTask; a sinalização visual vai pela fila (o pixel
-// de processamento pisca durante o update) — nunca leds.* direto daqui.
+// Os callbacks rodam na netTask; a sinalização visual vai pela fila (a
+// varredura de solving roda durante o update) — nunca leds.* direto daqui.
 static void setupOta() {
   ArduinoOTA.setHostname(OTA_HOSTNAME);
   if (OTA_PASSWORD[0]) {
@@ -568,7 +579,7 @@ void setup() {
   Serial.println(F("\n\n"));
   Serial.println(F("╔═══════════════════════════════════════════════╗"));
   Serial.println(F("║  CertMind - Cliente de Stream ESP32-S3        ║"));
-  Serial.println(F("║  Versão: 3.5 (SSE)                            ║"));
+  Serial.println(F("║  Versão: 3.6 (SSE)                            ║"));
   Serial.println(F("╚═══════════════════════════════════════════════╝"));
 
   leds.begin();

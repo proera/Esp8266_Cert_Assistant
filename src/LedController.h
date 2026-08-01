@@ -7,8 +7,10 @@
  *   - Pixels 0-5: RESPOSTAS (posições A-F / 1-6), cada uma com a cor do LED
  *     físico que ocupava no D1 Mini (F = magenta; LED_COLOR_* no Config.h).
  *   - Pixel 6: CONEXÃO — âmbar piscando = conectando/reconectando; pulso
- *     violeta curto = conectado e ocioso (heartbeat).
- *   - Pixel 7: PROCESSAMENTO — ciano piscando = solving; apagado = idle.
+ *     violeta curto = conectado e ocioso (heartbeat, suprimido enquanto uma
+ *     resposta está em exibição).
+ *   - Pixel 7: apagado fora do solving — o PROCESSAMENTO é sinalizado por
+ *     uma varredura vermelha vai-e-vem com rastro na barra inteira.
  *
  * Desde o M3 a saúde da conexão e o andamento do processamento NÃO disputam
  * mais pixels com as respostas — a escada de prioridades encolheu:
@@ -19,10 +21,12 @@
  *      Sim = fixo, Não = piscando, simultâneos). Toda resposta começa com um
  *      blank curto (LED_HOLD_INTAKE_MS) para tornar visível a chegada mesmo
  *      de respostas iguais consecutivas (ex.: A depois A).
- *   4. O "processando" é um canal próprio (pixel 7): um solving novo NÃO
- *      apaga a resposta em exibição. Sem TTL; se o stream cair no meio, é
- *      abortado (senão piscaria para sempre) e o status inicial do servidor
- *      ressincroniza quando o stream reabre.
+ *   4. O "processando" (solving) é uma varredura vermelha vai-e-vem com
+ *      rastro em fading na barra inteira: TOMA os 8 pixels enquanto durar
+ *      (a resposta em exibição e o pixel de conexão reassumem ao terminar).
+ *      Sem TTL; se o stream cair no meio, é abortada (senão varreria para
+ *      sempre) e o status inicial do servidor ressincroniza quando o stream
+ *      reabre.
  *
  * Janela de boot: após begin(), por LED_BOOT_BLINK_MS a barra sinaliza
  * normalmente; em seguida TODOS os pixels (resposta e status) ficam apagados
@@ -50,8 +54,9 @@ class LedController {
     void setConnected(bool connected);
 
     // --- Evento status (state="solving"/"idle") ---
-    // Processando: pixel 7 piscando até chegar answer / error / idle. Canal
-    // independente: não toca na resposta exibida nos pixels 0-5.
+    // Processando: varredura vermelha na barra inteira até chegar answer /
+    // error / idle. Sobrepõe a resposta em exibição enquanto durar; ela
+    // reassume (se o TTL não expirou) quando o solving termina.
     void showProcessing();
     // Encerra o "processando" (state="idle" ou answer entregue).
     void stopProcessing();
@@ -82,9 +87,10 @@ class LedController {
 
     bool _answerActive = false;   // há resposta em exibição nos pixels 0-5
     bool _connected = false;      // saúde do stream (pixel 6)
-    bool _processing = false;     // solving em andamento (pixel 7)
+    bool _processing = false;     // solving em andamento (varredura na barra inteira)
     Mode _mode = MODE_HOLD;
     unsigned long _animStart = 0; // início da animação corrente
+    unsigned long _solveStart = 0; // início da varredura de solving
 
     // Janela de boot: blackout total após LED_BOOT_BLINK_MS, até a 1ª resposta.
     unsigned long _bootMillis = 0;      // instante do begin() (início da janela)
@@ -101,7 +107,7 @@ class LedController {
 
     // Helpers de saída (só marcam o frame; flush() transmite)
     void writeMask(uint8_t mask);
-    void setStatusPixel(uint8_t pix, const CRGB& c);
+    void setPixel(uint8_t pix, const CRGB& c);
     void allOff();
     void flush();
 
@@ -111,6 +117,7 @@ class LedController {
     void renderError(unsigned long now);
     void renderSeq(unsigned long now);
     void renderStatus(unsigned long now);
+    void renderSolving(unsigned long now);
 
     void startHold();
     void startSeq();

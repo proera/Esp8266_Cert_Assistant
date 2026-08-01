@@ -79,7 +79,7 @@
 
 // Pixels de status (canal independente das respostas)
 #define LED_PIX_STATUS_CONN 6  // conexão: âmbar piscando = (re)conectando; pulso violeta = ocioso
-#define LED_PIX_STATUS_PROC 7  // processamento: ciano piscando = solving; apagado = idle
+#define LED_PIX_STATUS_PROC 7  // apagado fora do solving (a varredura usa a barra inteira)
 
 // Brilho global (0-255) e teto de potência do FastLED. O limite de 5 V/600 mA
 // foi o validado no projeto de teste do M0 — 8 pixels em branco cheio puxariam
@@ -102,7 +102,6 @@
 // (LED_COLOR_A..F), senão um pulso de status se leria como resposta.
 #define LED_COLOR_STATUS_CONN 0xFF6000  // Âmbar: conectando/reconectando (pixel 6 piscando)
 #define LED_COLOR_STATUS_OK   0x8000FF  // Violeta: heartbeat de ocioso (pulso curto no pixel 6)
-#define LED_COLOR_STATUS_PROC 0x00FFFF  // Ciano: processando (pixel 7 piscando)
 
 // ========================================
 // TIMINGS DOS PADRÕES DE LED (ms)
@@ -110,7 +109,9 @@
 // A) Conexão / reconexão: pixel de status (6) piscando em âmbar
 #define LED_CONN_BLINK_MS 150
 
-// A) Ocioso (conectado): heartbeat discreto no pixel de status (6), em violeta
+// A) Ocioso (conectado): heartbeat discreto no pixel de status (6), em violeta.
+// Suprimido enquanto uma resposta está em exibição (o pulso ao lado da
+// resposta desviava a leitura); volta quando o HOLD/sequência termina.
 #define LED_IDLE_PERIOD_MS 2000  // 1 pulso a cada ~2s
 #define LED_IDLE_PULSE_MS 80     // duração do pulso
 
@@ -137,10 +138,18 @@
 #define LED_SEQ_PASSES 2         // toca a sequência + 1 repetição
 #define LED_SEQ_ERRBLINK_MS 250  // blink dos 6 juntos p/ slot inválido
 
-// D) Processando (evento status, state="solving"): pixel de status (7)
-// piscando em ciano continuamente até chegar answer / status error / status
-// idle. Canal independente: NÃO interfere na resposta exibida nos pixels 0-5.
-#define LED_PROC_BLINK_MS 250    // meio-período: 250 ms aceso / 250 ms apagado
+// D) Processando (evento status, state="solving"): varredura vermelha
+// vai-e-vem (estilo Larson scanner) na BARRA INTEIRA (8 pixels), com rastro
+// em fading atrás da cabeça, sem TTL, até chegar answer / status error /
+// status idle. A varredura TOMA a barra enquanto durar (a resposta em
+// exibição e o pixel de conexão reassumem ao terminar). O vermelho coincide
+// de propósito com LED_COLOR_C: o movimento contínuo é inconfundível com uma
+// resposta estática.
+#define LED_SOLVE_COLOR 0xFF0000  // vermelho da varredura
+#define LED_SOLVE_SPAN 8          // pixels varridos (a barra inteira)
+#define LED_SOLVE_STEP_MS 80      // avanço da cabeça (ms por pixel)
+#define LED_SOLVE_TRAIL 3         // pixels de rastro atrás da cabeça
+#define LED_SOLVE_FADE 110        // brilho remanescente por passo do rastro (0-255)
 
 // B) HOLD (single / multiple / yesno): resposta retida com TTL.
 // Toda exibição começa com um blank curto (transição visível mesmo p/ respostas

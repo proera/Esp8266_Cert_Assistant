@@ -126,8 +126,8 @@ A barra WS2812 usa **um único pino de dados** (GPIO 13). Cada posição de resp
 | **3** | 🔵 Azul     | Resposta 4 / D |
 | **4** | ⚪ Branco   | Resposta 5 / E |
 | **5** | 🟣 Magenta  | Resposta 6 / F |
-| **6** | 🟠 Âmbar / 🟣 Violeta | Status: conexão (âmbar piscando = reconectando; pulso violeta = ocioso) |
-| **7** | 🩵 Ciano   | Status: processamento (piscando = `solving`) |
+| **6** | 🟠 Âmbar / 🟣 Violeta | Status: conexão (âmbar piscando = reconectando; pulso violeta = ocioso, suprimido com resposta em exibição) |
+| **7** | ⚫ Apagado | Apagado fora do `solving` — o processamento é a varredura vermelha na barra inteira |
 
 ```
    ESP32-S3 Super Mini              Barra WS2812 (8 px)
@@ -177,7 +177,7 @@ têm precedência e sobrevivem a reboot.
 | Buffers do parser | `SSE_MAX_LINE`, `SSE_MAX_DATA`, `SSE_MAX_CHUNK`, `SSE_MAX_EVENT_ID`, `SSE_RETRY_MIN/MAX_MS` |
 | Conexão / ocioso / boot | `LED_CONN_BLINK_MS`, `LED_IDLE_PERIOD_MS`, `LED_IDLE_PULSE_MS`, `LED_BOOT_BLINK_MS` |
 | Resposta retida | `LED_HOLD_TTL_MS`, `LED_HOLD_INTAKE_MS`, `LED_YESNO_BLINK_MS` |
-| Processando | `LED_PROC_BLINK_MS` |
+| Processando (varredura) | `LED_SOLVE_COLOR`, `LED_SOLVE_SPAN`, `LED_SOLVE_STEP_MS`, `LED_SOLVE_TRAIL`, `LED_SOLVE_FADE` |
 | Teste / erro / sequências | `LED_CHASE_*`, `LED_ERROR_*`, `LED_SEQ_*` |
 | OTA | `OTA_HOSTNAME`, `OTA_PASSWORD` |
 | Serial e JSON | `SERIAL_BAUD_RATE`, `JSON_DOC_SIZE` |
@@ -202,7 +202,7 @@ pio run --target clean   # Limpa artefatos de build
 
 **OTA (sem cabo):** descomente o bloco `espota` no `platformio.ini` e o mesmo
 `pio run --target upload` passa a gravar pela rede (`certmind-s3.local`, senha `OTA_PASSWORD`
-do `Config.h`). Durante o update, o pixel de processamento (7) pisca em ciano.
+do `Config.h`). Durante o update, roda a varredura vermelha de processamento (barra inteira).
 
 **Configuração em runtime (NVS):** pela serial, `config` mostra os valores em uso;
 `config set host 192.168.15.40` (chaves: `ssid`/`pass`/`host`/`port`/`path`) persiste um
@@ -302,12 +302,12 @@ Cores:     A=verde B=amarelo C=vermelho D=azul E=branco F=magenta
 | Situação | Pixel | Padrão |
 |---|:---:|---|
 | Conectando / sem WiFi / reconectando | 6 | Âmbar piscando ~150 ms |
-| Conectado, ocioso | 6 | Heartbeat violeta: 1 pulso de ~80 ms a cada ~2 s |
-| `status: solving` | 7 | Ciano piscando ~250 ms, **sem TTL**, até chegar `answer`, `error` ou `idle`. **Não apaga a resposta em exibição** e encerra a janela de silêncio do boot |
-| `status: idle` | 7 | Apagado |
+| Conectado, ocioso | 6 | Heartbeat violeta: 1 pulso de ~80 ms a cada ~2 s — **suprimido enquanto uma resposta está em exibição** |
+| `status: solving` | 0–7 | **Varredura vermelha vai-e-vem** (Larson scanner) com rastro em fading na **barra inteira**, **sem TTL**, até chegar `answer`, `error` ou `idle`. Toma a barra enquanto dura (a resposta em exibição e o pixel de conexão reassumem ao terminar) e encerra a janela de silêncio do boot |
+| `status: idle` | — | Varredura encerrada; resposta/conexão reassumem. Fora do solving o pixel 7 fica apagado |
 
 `status: error` usa o padrão de erro nos pixels de resposta (abaixo). Se o stream cair durante um
-`solving`, o ciano é **abortado** (senão a queda ficaria escondida atrás dele); ao reabrir, o
+`solving`, a varredura é **abortada** (senão a queda ficaria escondida atrás dela); ao reabrir, o
 `status` inicial do servidor ressincroniza.
 
 ### Resposta — evento `answer` (pixels 0–5)
@@ -367,7 +367,7 @@ replay, um `answer` emitido durante a janela de reconexão chega assim que o str
 | 2 | **Evento de teste** (sem custo de IA) | `POST {BASE}/api/exam/solve` com `Test=true` (multipart) → chase A→F em < ~1 s |
 | 3 | **`single` / `multiple`** | 1 pixel / vários pixels acesos e retidos por ~12 s |
 | 4 | **`yesno`** | Pixels das afirmações acesos ao mesmo tempo — Sim fixo, Não piscando |
-| 5 | **Processando (`status`)** | `POST` real (sem `Test`) → o pixel 7 pisca ciano imediatamente e durante todo o processamento **sem apagar a resposta em exibição**; ao chegar o `answer`, ele para e a resposta aparece; o `idle` seguinte **não** apaga a resposta. Se falhar, chega `status error` → os 6 pixels de resposta piscando 3× |
+| 5 | **Processando (`status`)** | `POST` real (sem `Test`) → varredura vermelha vai-e-vem na barra inteira imediatamente e durante todo o processamento; ao chegar o `answer`, ela para e a resposta aparece (com o heartbeat do pixel 6 suprimido durante a exibição); o `idle` seguinte **não** apaga a resposta. Se falhar, chega `status error` → os 6 pixels de resposta piscando 3× |
 | 6 | **`dropdown` / `ordering` / `matching`** | Sequência acendendo a posição de cada slot |
 | 7 | **Ilegível** | Force `hasData=false` → os 6 pixels de resposta piscando juntos 3× |
 | 8 | **Reconexão** | Derrube WiFi/servidor → pixel 6 piscando âmbar + log de backoff; ao voltar, reconecta e o backoff zera |
