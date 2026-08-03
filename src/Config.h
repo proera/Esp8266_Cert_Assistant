@@ -79,7 +79,8 @@
 
 // Pixels de status (canal independente das respostas)
 #define LED_PIX_STATUS_CONN 6  // conexão: âmbar piscando = (re)conectando; pulso violeta = ocioso
-#define LED_PIX_STATUS_PROC 7  // apagado fora do solving (a varredura usa a barra inteira)
+#define LED_PIX_STATUS_PROC 7  // multicaptura (respiração ciano); apagado fora dela e durante o
+                               // solving, cuja varredura usa a barra inteira
 
 // Brilho global (0-255) e teto de potência do FastLED. O limite de 5 V/600 mA
 // foi o validado no projeto de teste do M0 — 8 pixels em branco cheio puxariam
@@ -150,6 +151,26 @@
 #define LED_SOLVE_STEP_MS 80      // avanço da cabeça (ms por pixel)
 #define LED_SOLVE_TRAIL 3         // pixels de rastro atrás da cabeça
 #define LED_SOLVE_FADE 110        // brilho remanescente por passo do rastro (0-255)
+
+// E) Multicaptura (evento status, state="capturing", servidor v2.9+): um print
+// só não basta para responder (questão com VÁRIOS dropdowns — só uma lista abre
+// por foto — ou painel de case study), então o servidor parqueia o print e
+// aguarda a PRÓXIMA foto da mesma questão. É o novo estado-BASE: substitui o
+// ocioso e fica ativo até chegar solving / answer real / idle / error.
+// Sinalizado por uma respiração ciano no pixel 7 (livre desde a v3.6, quando a
+// varredura de solving passou a usar a barra inteira): não disputa pixel nem com
+// a resposta (0-5) nem com a conexão (6). Ciano é o único vértice RGB que sobrou
+// — não coincide com nenhuma cor de resposta (LED_COLOR_A..F) nem de status.
+// Ao contrário do solving, NÃO é abortado na queda do stream: o aviso precisa
+// sobreviver à reconexão (o status inicial do servidor ressincroniza).
+#define LED_CAPTURE_COLOR 0x00FFFF   // ciano
+#define LED_CAPTURE_PERIOD_MS 1600UL // período da respiração (vale -> pico -> vale)
+// Quantização da respiração: sem ela o nível mudaria a cada tick de 5 ms da
+// uiTask e o flush() transmitiria a barra a ~200 Hz. 40 ms = 25 fps, suave de
+// sobra e com teto de transmissão bem definido.
+#define LED_CAPTURE_STEP_MS 40UL
+#define LED_CAPTURE_MIN 20           // brilho no vale (0-255) — não apaga de todo
+#define LED_CAPTURE_MAX 255          // brilho no pico (0-255)
 
 // B) HOLD (single / multiple / yesno): resposta retida com TTL.
 // Toda exibição começa com um blank curto (transição visível mesmo p/ respostas

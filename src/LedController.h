@@ -9,8 +9,10 @@
  *   - Pixel 6: CONEXÃO — âmbar piscando = conectando/reconectando; pulso
  *     violeta curto = conectado e ocioso (heartbeat, suprimido enquanto uma
  *     resposta está em exibição).
- *   - Pixel 7: apagado fora do solving — o PROCESSAMENTO é sinalizado por
- *     uma varredura vermelha vai-e-vem com rastro na barra inteira.
+ *   - Pixel 7: MULTICAPTURA — respiração ciano enquanto o servidor aguarda a
+ *     próxima foto da mesma questão (status "capturing"); apagado fora dela.
+ *     O PROCESSAMENTO (solving) não usa este pixel: é uma varredura vermelha
+ *     vai-e-vem com rastro na barra inteira.
  *
  * Desde o M3 a saúde da conexão e o andamento do processamento NÃO disputam
  * mais pixels com as respostas — a escada de prioridades encolheu:
@@ -24,9 +26,16 @@
  *   4. O "processando" (solving) é uma varredura vermelha vai-e-vem com
  *      rastro em fading na barra inteira: TOMA os 8 pixels enquanto durar
  *      (a resposta em exibição e o pixel de conexão reassumem ao terminar).
- *      Sem TTL; se o stream cair no meio, é abortada (senão varreria para
- *      sempre) e o status inicial do servidor ressincroniza quando o stream
- *      reabre.
+ *      Sem TTL: quem a encerra são os eventos que fecham o solve — answer
+ *      (real ou test), erro, idle e capturing, todos via stopSolving(). Não
+ *      basta contar com o idle final: no fluxo de multicaptura o capturing
+ *      toma o lugar dele e a varredura ficaria eterna. Se o stream cair no
+ *      meio ela também é abortada, e o status inicial do servidor
+ *      ressincroniza quando o stream reabre.
+ *   5. A "multicaptura" (status capturing) é um AVISO de fundo no pixel 7:
+ *      convive com tudo (resposta, chase de test, conexão) e só é encerrada
+ *      pelos eventos que fecham o modo — solving, answer real, idle ou erro.
+ *      Diferente do solving, sobrevive a uma queda do stream.
  *
  * Janela de boot: após begin(), por LED_BOOT_BLINK_MS a barra sinaliza
  * normalmente; em seguida TODOS os pixels (resposta e status) ficam apagados
@@ -50,7 +59,8 @@ class LedController {
     // Chamar a cada iteração do loop(): avança a animação corrente.
     void update();
 
-    // Saúde do stream (pixel 6). Aborta o "processando" quando cai.
+    // Saúde do stream (pixel 6). Aborta o "processando" quando cai — mas NÃO a
+    // multicaptura, que precisa sobreviver à reconexão (ver showCapturing()).
     void setConnected(bool connected);
 
     // --- Evento status (state="solving"/"idle") ---
@@ -60,6 +70,14 @@ class LedController {
     void showProcessing();
     // Encerra o "processando" (state="idle" ou answer entregue).
     void stopProcessing();
+
+    // --- Evento status (state="capturing") ---
+    // Multicaptura: o servidor parqueou o print e aguarda a próxima foto da
+    // mesma questão. Respiração ciano no pixel 7, sem TTL, até que um solving /
+    // answer real / idle / erro feche o modo (esses caminhos já limpam o aviso
+    // por dentro — não há comando "capture off"). O chase de test NÃO limpa: no
+    // fluxo real ele PRECEDE cada capturing ("print recebido").
+    void showCapturing();
 
     // --- Eventos de resposta (interrompem o que estiver tocando) ---
     void showSingle(uint8_t pos);                       // pos 1..6
@@ -88,6 +106,7 @@ class LedController {
     bool _answerActive = false;   // há resposta em exibição nos pixels 0-5
     bool _connected = false;      // saúde do stream (pixel 6)
     bool _processing = false;     // solving em andamento (varredura na barra inteira)
+    bool _capturing = false;      // multicaptura ativa (respiração ciano no pixel 7)
     Mode _mode = MODE_HOLD;
     unsigned long _animStart = 0; // início da animação corrente
     unsigned long _solveStart = 0; // início da varredura de solving
@@ -118,9 +137,19 @@ class LedController {
     void renderSeq(unsigned long now);
     void renderStatus(unsigned long now);
     void renderSolving(unsigned long now);
+    CRGB captureColor(unsigned long now) const;  // nível da respiração de multicaptura
 
     void startHold();
     void startSeq();
+
+    // Encerra a multicaptura. Chamado pelos eventos que fecham o modo
+    // (solving / answer real / idle / erro), nunca pelo chase de test.
+    void stopCapturing();
+
+    // Encerra a varredura de solving sem tocar na resposta em exibição nem na
+    // multicaptura. Como a varredura não tem TTL, TODO evento que fecha um
+    // solve precisa chamar isto: idle, answer (real ou test), erro e capturing.
+    void stopSolving();
 };
 
 #endif // LED_CONTROLLER_H

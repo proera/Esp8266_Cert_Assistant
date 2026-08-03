@@ -1,7 +1,7 @@
 /*
  * Sistema CertMind - Cliente de Stream ESP32-S3 (Super Mini)
  *
- * Versão: 3.6
+ * Versão: 3.8
  *
  * Descrição: Consome o stream SSE da API CertMind por UMA conexão HTTP
  * persistente (GET, texto claro, sem TLS) e aciona os LEDs da barra WS2812
@@ -15,11 +15,38 @@
  * Hardware: ESP32-S3 Super Mini (FH4R2) + barra WS2812 de 8 pixels no
  * GPIO 13. Pixels 0-5 = posições/letras A-F => 1-6, com as cores dos LEDs
  * físicos do D1 Mini + magenta para F. Pixel 6 = conexão (âmbar piscando =
- * (re)conectando; pulso violeta = ocioso, suprimido com resposta em
- * exibição). O processamento (solving) é uma varredura vermelha vai-e-vem
- * com rastro na barra inteira; o pixel 7 fica apagado fora dela.
+ * (re)conectando; pulso violeta = ocioso, suprimido com resposta em exibição
+ * ou multicaptura ativa). Pixel 7 = multicaptura (respiração ciano),
+ * apagado fora dela. O processamento (solving) é uma varredura vermelha
+ * vai-e-vem com rastro na barra inteira.
  *
  * Changelog:
+ *   3.8 - Correção: no modo multicaptura a varredura vermelha de solving não
+ *         parava mais (validado em hardware na v3.7). A varredura não tem TTL
+ *         e, até aqui, quem a encerrava era só o status idle que fecha o solve
+ *         — mas o capturing SUBSTITUI esse idle, então _processing ficava
+ *         ligado para sempre e o update() desviava para renderSolving() antes
+ *         de tudo, escondendo o chase de test e a respiração ciano do pixel 7.
+ *         A relação estava em mão única: showProcessing() limpava a
+ *         multicaptura, e nada limpava o solving. Agora todo evento que fecha
+ *         um solve chama stopSolving() — capturing, answer (real ou test),
+ *         erro e idle —, que é o contrato já documentado desde a v3.6
+ *         ("sem TTL, até chegar answer / error / idle"). Efeito colateral bom:
+ *         a resposta deixa de esperar o idle para aparecer.
+ *   3.7 - Novo estado do stream: status {"state":"capturing"} (servidor
+ *         v2.9/v2.10). Quando um print sozinho não basta para responder
+ *         (questão com vários dropdowns — só uma lista abre por foto — ou
+ *         painel de case study), o servidor parqueia o print e aguarda a
+ *         PRÓXIMA foto da mesma questão. O evento chega logo após o answer de
+ *         "test" e SUBSTITUI o idle final, virando o estado-base até vir
+ *         solving / answer real / idle / error. Antes o firmware caía na regra
+ *         "state desconhecido = idle" e o operador não via aviso nenhum. Agora
+ *         o pixel 7 (livre desde a v3.6) respira em ciano enquanto o modo
+ *         durar, suprimindo o heartbeat violeta do pixel 6 (o capturing É o
+ *         novo ocioso). Ao contrário do solving, o aviso SOBREVIVE a uma queda
+ *         do stream — o print segue parqueado no servidor e o status inicial da
+ *         reconexão ressincroniza. O chase de test não encerra o modo (precede
+ *         cada capturing); solving/answer real/idle/erro encerram.
  *   3.6 - Animação de solving: o pisca ciano do pixel 7 vira uma varredura
  *         vermelha vai-e-vem (estilo Larson scanner) na barra inteira (8
  *         pixels), com rastro em fading atrás da cabeça. A varredura toma a
@@ -184,8 +211,14 @@ enum LedCmdType : uint8_t {
   LED_CMD_ERROR,       // padrão de erro
   LED_CMD_PROC_ON,     // status solving
   LED_CMD_PROC_OFF,    // status idle / desconhecido
+  LED_CMD_CAPTURE_ON,  // status capturing (multicaptura)
   LED_CMD_CONNECTED,   // value = saúde do stream
 };
+
+// Não existe LED_CMD_CAPTURE_OFF: o modo é encerrado por dentro do
+// LedController pelos próprios eventos que o fecham (PROC_ON/solving,
+// PROC_OFF/idle, qualquer answer real e ERROR). Um comando separado só
+// abriria espaço para ordem invertida na fila e estados divergentes.
 
 struct LedCommand {
   uint8_t type;             // LedCmdType
@@ -229,6 +262,7 @@ static void applyLedCommand(const LedCommand& cmd) {
     case LED_CMD_ERROR:     leds.showError();                   break;
     case LED_CMD_PROC_ON:   leds.showProcessing();              break;
     case LED_CMD_PROC_OFF:  leds.stopProcessing();              break;
+    case LED_CMD_CAPTURE_ON: leds.showCapturing();              break;
     case LED_CMD_CONNECTED: leds.setConnected(cmd.value);       break;
   }
 }
@@ -380,6 +414,12 @@ void handleAnswer(char* payload) {
 // solving -> error (sem answer). O idle que chega logo após um answer NÃO deve
 // apagar a resposta — quem garante isso é LedController::stopProcessing(), que
 // só age se o que está no ar é o próprio "processando".
+//
+// Num print PARCIAL (multicaptura, servidor v2.9+) a sequência é outra:
+// answer{questionType:"test"} -> capturing, e o capturing toma o lugar do idle
+// final até a próxima foto. A foto que fecha o conjunto retoma o fluxo normal
+// (solving -> answer -> idle). Um state desconhecido continua sendo tratado
+// como idle, por spec.
 void handleStatus(char* payload) {
   g_doc.clear();
   DeserializationError err = deserializeJson(g_doc, payload);
@@ -405,6 +445,17 @@ void handleStatus(char* payload) {
     // Varredura vermelha na barra inteira até answer / error / idle; a
     // resposta em exibição reassume quando o solving termina.
     sendSimpleLedCommand(LED_CMD_PROC_ON);
+    return;
+  }
+
+  if (strcmp(state, "capturing") == 0) {
+    // Multicaptura (servidor v2.9+): um print só não resolve a questão (vários
+    // dropdowns — uma lista aberta por foto — ou painel de case study), então o
+    // servidor parqueou o print e aguarda a PRÓXIMA foto da mesma questão.
+    // Chega logo após o answer de "test" e SUBSTITUI o idle final: é o novo
+    // estado-base, ativo até vir solving / answer real / idle / error.
+    Serial.println(F("[STATUS] multicaptura -> aguardando a proxima foto da mesma questao"));
+    sendSimpleLedCommand(LED_CMD_CAPTURE_ON);
     return;
   }
 
@@ -579,7 +630,7 @@ void setup() {
   Serial.println(F("\n\n"));
   Serial.println(F("╔═══════════════════════════════════════════════╗"));
   Serial.println(F("║  CertMind - Cliente de Stream ESP32-S3        ║"));
-  Serial.println(F("║  Versão: 3.6 (SSE)                            ║"));
+  Serial.println(F("║  Versão: 3.7 (SSE)                            ║"));
   Serial.println(F("╚═══════════════════════════════════════════════╝"));
 
   leds.begin();

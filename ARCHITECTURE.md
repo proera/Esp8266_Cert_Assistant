@@ -128,6 +128,7 @@ main.cpp: deserializeJson(g_doc, payload)                     [zero-copy]
     │           └── erro de parse                   → leds.showError()
     │
     └─ status ──┬── "solving"                       → leds.showProcessing()
+                ├── "capturing"                     → leds.showCapturing()
                 ├── "error"                         → leds.showError()
                 ├── "idle" / desconhecido           → leds.stopProcessing()
                 └── erro de parse                   → só log (sem showError)
@@ -161,7 +162,8 @@ Centraliza **todas** as constantes via `#define`. Nenhuma configuração espalha
 | Janela de boot | `LED_BOOT_BLINK_MS` | 300000 ms (5 min) |
 | HOLD | `LED_HOLD_TTL_MS`, `LED_HOLD_INTAKE_MS`, `LED_YESNO_BLINK_MS` | 12000 ms, 250 ms, 350 ms |
 | Processando (varredura) | `LED_SOLVE_COLOR`, `LED_SOLVE_SPAN`, `LED_SOLVE_STEP_MS`, `LED_SOLVE_TRAIL`, `LED_SOLVE_FADE` | vermelho, 8 px (barra inteira), 80 ms, 3, 110 |
-| Pixels de status | `LED_PIX_STATUS_CONN`, `LED_PIX_STATUS_PROC`, `LED_COLOR_STATUS_*` | 6, 7 (apagado fora do solving) · âmbar/violeta |
+| Multicaptura (respiração) | `LED_CAPTURE_COLOR`, `LED_CAPTURE_PERIOD_MS`, `LED_CAPTURE_STEP_MS`, `LED_CAPTURE_MIN`, `LED_CAPTURE_MAX` | ciano, 1600 ms, 40 ms, 20, 255 |
+| Pixels de status | `LED_PIX_STATUS_CONN`, `LED_PIX_STATUS_PROC`, `LED_COLOR_STATUS_*` | 6 (âmbar/violeta), 7 (ciano da multicaptura; apagado fora dela) |
 | Test / erro | `LED_CHASE_STEP_MS`, `LED_CHASE_PASSES`, `LED_ERROR_ON_MS`, `LED_ERROR_OFF_MS`, `LED_ERROR_CYCLES` | 120 ms, 2, 250 ms, 250 ms, 3 |
 | Sequências | `LED_SEQ_STEP_MS`, `LED_SEQ_GAP_MS`, `LED_SEQ_BLINK_MS`, `LED_SEQ_PASSES`, `LED_SEQ_ERRBLINK_MS` | 1500 ms, 400 ms, 200 ms, 2, 250 ms |
 | Serial | `SERIAL_BAUD_RATE` | 115200 |
@@ -242,14 +244,31 @@ animações não-bloqueantes: respostas (pixels 0–5, A–F) e status (6 = cone
 | Pixel | Estado | Comportamento |
 |---|---|---|
 | 6 | desconectado | Âmbar piscando (150 ms) |
-| 6 | conectado | Pulso violeta curto (80 ms a cada 2 s) — suprimido enquanto há resposta em exibição |
-| 7 | — | Apagado fora do solving (a varredura usa a barra inteira) |
+| 6 | conectado | Pulso violeta curto (80 ms a cada 2 s) — suprimido enquanto há resposta em exibição **ou multicaptura ativa** |
+| 7 | `_capturing` | Respiração ciano (`sin8` sobre passos de `LED_CAPTURE_STEP_MS`); apagado fora da multicaptura. O solving não usa este pixel (a varredura toma a barra inteira) |
 
 **Processando (`_processing`, `renderSolving()` — desde a v3.6):** varredura vermelha vai-e-vem
 (estilo Larson scanner) na barra inteira (8 pixels), com rastro em fading (`LED_SOLVE_TRAIL`
 pixels decaídos por `LED_SOLVE_FADE` a cada passo de `LED_SOLVE_STEP_MS`), **sem TTL** — até
-`answer` / `error` / `idle` / queda do stream. Toma a barra enquanto durar; a resposta em
-exibição (se o TTL não expirou) e o pixel de conexão reassumem ao terminar.
+`answer` (real ou `test`) / `error` / `idle` / `capturing` / queda do stream. Toma a barra enquanto
+durar; a resposta em exibição (se o TTL não expirou) e o pixel de conexão reassumem ao terminar.
+
+Como não há TTL, **cada um desses caminhos chama `stopSolving()` explicitamente** (`startHold()`,
+`startSeq()`, `showTestChase()`, `showError()`, `showCapturing()`, `stopProcessing()`). Até a v3.7
+quem encerrava a varredura era só o `idle` que fecha o solve — o que quebrou no fluxo de
+multicaptura, onde o `capturing` **substitui** esse `idle`: a varredura rodava para sempre e o
+`update()`, que desvia para `renderSolving()` antes de tudo, escondia o chase de `test` e o pixel 7.
+Corrigido na v3.8.
+
+**Multicaptura (`_capturing`, `showCapturing()` — desde a v3.7):** o servidor v2.9+ parqueia um
+print que sozinho não resolve a questão (vários dropdowns, painel de case study) e aguarda a
+próxima foto. Respiração ciano no pixel 7, **sem TTL**, até `solving` / `answer` real / `idle` /
+`error` — todos encerram o modo por dentro do controller (não há comando "capture off" na fila).
+Duas assimetrias deliberadas em relação ao solving: **sobrevive à queda do stream** (o print segue
+parqueado no servidor; o âmbar do pixel 6 já denuncia a queda e o `status` inicial da reconexão
+ressincroniza) e **não é encerrada pelo chase de `test`**, que no fluxo real precede cada
+`capturing`. A respiração é quantizada em `LED_CAPTURE_STEP_MS` antes de virar fase, senão o nível
+mudaria a cada tick de 5 ms da uiTask e o `flush()` transmitiria a barra a ~200 Hz.
 
 **Prioridade de exibição:**
 
@@ -269,7 +288,9 @@ exibição (se o TTL não expirou) e o pixel de conexão reassumem ao terminar.
   encerrar o solving nunca toca na resposta em exibição. (Até a v3.1, com status e resposta nos
   mesmos 5 LEDs, o condicional era o que impedia o `idle` pós-`answer` de apagar a resposta.)
 - **Queda do stream aborta o "processando"** — `setConnected(false)` zera `_processing` porque
-  ele não tem TTL; sem isso o pixel 7 piscaria para sempre escondendo a perda do stream.
+  ele não tem TTL; sem isso a varredura correria para sempre escondendo a perda do stream.
+  **Mas não aborta a multicaptura**: o print continua parqueado no servidor, o âmbar do pixel 6
+  já sinaliza a queda e o `status` inicial da reconexão ressincroniza o estado real.
 - **Janela de boot** (5 min) — a barra sinaliza normalmente e depois entra em blackout total até
   a 1ª resposta; `_answerActive` implica `_firstAnswerReceived`, então o gate nunca corta uma
   resposta em exibição.
@@ -282,7 +303,8 @@ exibição (se o TTL não expirou) e o pixel de conexão reassumem ao terminar.
 _answerActive (bool)        → há resposta sendo exibida (pixels 0-5)
 _mode (enum Mode)           → HOLD / CHASE / ERROR / SEQ
 _connected (bool)           → saúde do stream (pixel 6)
-_processing (bool)          → solving em andamento (pixel 7)
+_processing (bool)          → solving em andamento (varredura na barra inteira)
+_capturing (bool)           → multicaptura ativa (respiração ciano no pixel 7)
 _animStart (unsigned long)  → millis() do início da animação (TTL, blank, passos)
 _bootMillis                 → millis() do begin(): início da janela de boot
 _firstAnswerReceived        → encerra o blackout em definitivo (não rearma)
@@ -395,13 +417,30 @@ que encerra o evento antes da hora sempre que um chunk termina no meio de uma li
 ### 6.5. Payload do evento `status`
 
 ```json
-{ "state": "solving|idle|error", "activeSolves": 1 }
+{ "state": "solving|capturing|idle|error", "activeSolves": 1 }
 ```
 
 Sequência normal de um solve: `status solving` → `answer` → `status idle`.
 Em falha: `status solving` → `status error` (**sem** `answer`).
 Ao abrir a conexão o servidor manda um `status` com o estado atual, então reconectar no meio de um
 processamento já traz `solving` — é assim que o estado ressincroniza.
+
+**Multicaptura (`capturing`, servidor v2.9+).** Quando uma foto sozinha não basta para responder
+(questão com vários dropdowns — só uma lista abre por foto — ou painel de case study), o servidor
+parqueia o print e aguarda a próxima foto da mesma questão:
+
+```text
+event: answer
+data: {"hasData":false,"questionType":"test","letters":[],"answerText":"-"}
+
+event: status
+data: {"state":"capturing","activeSolves":0}
+```
+
+O `capturing` chega logo após o `answer` de `test` e **substitui o `idle` final**, virando o
+estado-base até chegar `solving`, um `answer` real, `idle` (lote limpo) ou `error`. O `status`
+inicial da (re)conexão também pode vir `capturing` — é assim que o aviso sobrevive a uma
+reconexão. `: ping` não muda estado; `state` desconhecido continua sendo tratado como `idle`.
 
 ---
 
@@ -418,8 +457,8 @@ ordem de cor GRB). O mapeamento lógico fica nos pixels:
 | 3 | Azul     | Resposta D (posição 4) |
 | 4 | Branco   | Resposta E (posição 5) |
 | 5 | Magenta  | Resposta F (posição 6) |
-| 6 | Âmbar / Violeta | Status: conexão (âmbar piscando = (re)conectando; pulso violeta = ocioso, suprimido com resposta em exibição) |
-| 7 | —        | Apagado fora do solving (a varredura vermelha usa a barra inteira) |
+| 6 | Âmbar / Violeta | Status: conexão (âmbar piscando = (re)conectando; pulso violeta = ocioso, suprimido com resposta em exibição ou multicaptura ativa) |
+| 7 | Ciano | Status: multicaptura (`capturing`) — respiração ciano; apagado fora dela. O solving não usa este pixel (a varredura vermelha toma a barra inteira) |
 
 Pinos a **evitar** no S3 em expansões futuras: GPIO 0 (strapping/BOOT), 19–20 (USB D-/D+),
 26–32 (flash SPI), 45–46 (strapping), 48 (WS2812 onboard).
@@ -467,6 +506,10 @@ coisas (era `yield()` no ESP8266).
 | **Erro *invisível* no `status`** | Piscar os pixels de resposta num status corrompido seria lido como "questão ilegível"; fica só no log |
 | **Status em pixels dedicados (v3.2)** | Conexão/processamento não disputam mais pixels com as respostas; o `solving` deixa de apagar a resposta exibida e o `stopProcessing()` condicional (cicatriz da v2.4) se dissolveu |
 | **Processando sem TTL, abortado na queda** | O andamento pode demorar; mas sem TTL, uma queda de stream deixaria o LED piscando para sempre |
+| **Multicaptura sobrevive à queda (v3.7)** | Assimetria deliberada com o solving: o print segue parqueado no servidor, então o aviso precisa atravessar a reconexão. A queda já é visível no pixel 6 (âmbar) e o `status` inicial do stream reaberto ressincroniza |
+| **Multicaptura encerrada por dentro do controller (v3.7)** | Sem `LED_CMD_CAPTURE_OFF`: `showProcessing()`/`startHold()`/`startSeq()`/`showError()`/`stopProcessing()` limpam o modo. Um comando separado abriria espaço para ordem invertida na fila e estados divergentes |
+| **Solving encerrado por `stopSolving()` em todo caminho (v3.8)** | A varredura não tem TTL, e até a v3.7 quem a encerrava era só o `idle` que fecha o solve. Como o `capturing` **substitui** esse `idle`, a varredura ficava eterna e escondia o pixel 7. A relação virou mão dupla: `showProcessing()` limpa a multicaptura e todo evento que fecha um solve limpa a varredura |
+| **Respiração quantizada em 40 ms (v3.7)** | Sem quantizar, o nível mudaria a cada tick de 5 ms da uiTask e o `flush()` transmitiria a barra a ~200 Hz, contra o contrato de só transmitir quando o frame muda |
 | **Blackout pós-boot** | Evita poluição luminosa em uso prolongado sem eventos; encerra em definitivo na 1ª resposta |
 | **Chunk-size sem dígito hex apenas rearma** | Tratá-lo como tamanho 0 dispararia um retry extra e pularia um degrau do backoff |
 | **Dual-core com fila por valor (v3.3)** | O que bloqueia (connect TCP ~5 s, WiFi 15 s, Serial) mora na netTask/core 0; a animação roda na loopTask/core 1 e nunca engasga. Comandos por valor + LedController exclusivo da loopTask = zero mutex |
@@ -486,8 +529,12 @@ coisas (era `yield()` no ESP8266).
 4. **NÃO mudar `AnswerCallback` para `const char*`** — quebra o zero-copy e estoura o documento JSON.
 5. **NÃO remover a camada de de-framing chunked** — o payload volta a truncar de forma intermitente.
 6. **NÃO reduzir o log de headers** de volta a "só a linha de status".
-7. **NÃO voltar o "processando" para os pixels de resposta** — o canal separado (pixel 7) é o que
-   permite ao `solving`/`idle` nunca interferir na resposta em exibição.
+7. **NÃO voltar o "processando" para os pixels de resposta** — o canal separado é o que permite ao
+   `solving`/`idle` nunca interferir na resposta em exibição.
+7b. **NÃO abortar a multicaptura em `setConnected(false)`** nem encerrá-la em `showTestChase()` —
+   as duas assimetrias em relação ao solving são deliberadas (ver seção 9).
+7c. **NÃO tirar o `stopSolving()` de nenhum caminho que fecha um solve** — a varredura não tem TTL
+   e contar só com o `idle` final foi exatamente o bug da v3.7 (ver seção 9).
 8. **NÃO adicionar `delay()` no caminho de renderização** — os `delay()` de tick (5 ms na uiTask,
    1 ms na netTask/parser) são o tick do FreeRTOS (ex-`yield()`) e **não** devem voltar a ser `yield()`.
 9. O rádio do ESP32-S3 opera apenas em WiFi **2,4 GHz**.

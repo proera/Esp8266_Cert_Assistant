@@ -35,6 +35,7 @@ void LedController::begin() {
   _answerActive = false;
   _connected = false;
   _processing = false;
+  _capturing = false;
   _bootMillis = millis();
   _firstAnswerReceived = false;
   _blackoutAnnounced = false;
@@ -129,22 +130,29 @@ void LedController::setConnected(bool connected) {
     Serial.println(F("[LED] Stream caiu durante o processamento -> abortando pixel de solving"));
     _processing = false;
   }
+  // A multicaptura, ao contrário, SOBREVIVE à queda de propósito: ela também
+  // não tem TTL, mas o operador segue com um print parqueado no servidor e
+  // precisa continuar vendo o aviso enquanto o firmware reconecta. O pixel 6
+  // (âmbar piscando) já sinaliza a queda, então nada fica escondido — e o
+  // status inicial do stream reaberto ressincroniza o estado real.
   _connected = connected;
 }
 
 // ========================================
-// Canal de status: pixel 6 (conexão); pixel 7 fica apagado
+// Canal de status: pixel 6 (conexão) e pixel 7 (multicaptura)
 // ========================================
 void LedController::renderStatus(unsigned long now) {
   // Pixel 6 — conexão: âmbar piscando enquanto (re)conecta; heartbeat violeta
   // discreto (pulso de LED_IDLE_PULSE_MS a cada LED_IDLE_PERIOD_MS) quando ok.
   // Com uma resposta em exibição o heartbeat fica suprimido (o pulso ao lado
   // da resposta desviava a leitura); a queda da conexão continua sinalizada.
+  // Com a multicaptura ativa ele também some: o capturing É o novo estado-base
+  // no lugar do ocioso, e a respiração do pixel 7 já é o sinal de vida.
   CRGB conn;
   if (!_connected) {
     bool on = ((now / LED_CONN_BLINK_MS) % 2) == 0;
     conn = on ? CRGB(LED_COLOR_STATUS_CONN) : CRGB::Black;
-  } else if (_answerActive) {
+  } else if (_answerActive || _capturing) {
     conn = CRGB::Black;
   } else {
     unsigned long phase = now % LED_IDLE_PERIOD_MS;
@@ -152,9 +160,52 @@ void LedController::renderStatus(unsigned long now) {
   }
   setPixel(LED_PIX_STATUS_CONN, conn);
 
-  // Pixel 7 — apagado fora do solving (durante ele update() nem chega aqui:
-  // desvia para renderSolving, que varre a barra inteira).
-  setPixel(LED_PIX_STATUS_PROC, CRGB::Black);
+  // Pixel 7 — multicaptura: respiração ciano enquanto o servidor aguarda a
+  // próxima foto; apagado fora dela. Durante o solving update() nem chega aqui
+  // (desvia para renderSolving, que varre a barra inteira) — e um solving já
+  // teria encerrado a multicaptura de qualquer forma.
+  setPixel(LED_PIX_STATUS_PROC, _capturing ? captureColor(now) : CRGB::Black);
+}
+
+// ========================================
+// E) Multicaptura (status capturing): respiração ciano no pixel 7
+// ========================================
+void LedController::showCapturing() {
+  if (!_capturing) {
+    Serial.println(F("[LED] Multicaptura ativa -> respiracao ciano no pixel 7"));
+  }
+  // O capturing SUBSTITUI o idle final do solve (o servidor não manda os dois):
+  // se a varredura não fosse encerrada aqui, ela rodaria para sempre — não tem
+  // TTL e o idle que a encerraria nunca chega. Era o bug da v3.7.
+  stopSolving();
+  _capturing = true;
+  _firstAnswerReceived = true;  // encerra o blackout pós-boot, se ativo
+}
+
+void LedController::stopCapturing() {
+  _capturing = false;
+}
+
+// Encerra só a varredura de solving, preservando a resposta em exibição (se o
+// TTL ainda corre) e a multicaptura. Chamado por TODO evento que fecha um solve
+// — idle, answer (real ou test), erro e capturing — porque a varredura não tem
+// TTL: o que não a encerra explicitamente a deixa rodando.
+void LedController::stopSolving() {
+  _processing = false;
+}
+
+// Nível da respiração no instante `now`. O tempo é quantizado em passos de
+// LED_CAPTURE_STEP_MS ANTES de virar fase: sem isso o nível mudaria a cada tick
+// de 5 ms da uiTask e o flush() retransmitiria a barra a ~200 Hz (o contrato da
+// classe é só transmitir quando o frame muda de fato).
+CRGB LedController::captureColor(unsigned long now) const {
+  const unsigned long frames = LED_CAPTURE_PERIOD_MS / LED_CAPTURE_STEP_MS;
+  const unsigned long frame = (now / LED_CAPTURE_STEP_MS) % frames;
+  // sin8() dá a curva suave (vale -> pico -> vale) num ciclo completo da fase.
+  const uint8_t wave = sin8((uint8_t)((frame * 256UL) / frames));
+  CRGB c(LED_CAPTURE_COLOR);
+  c.nscale8(lerp8by8(LED_CAPTURE_MIN, LED_CAPTURE_MAX, wave));
+  return c;
 }
 
 // ========================================
@@ -167,6 +218,7 @@ void LedController::showProcessing() {
   }
   _processing = true;
   _firstAnswerReceived = true;  // encerra o blackout pós-boot, se ativo
+  stopCapturing();  // a foto que fecha o conjunto chegou: o modo multicaptura acabou
 }
 
 void LedController::renderSolving(unsigned long now) {
@@ -201,7 +253,10 @@ void LedController::stopProcessing() {
   // Encerrar o solving não mexe no estado da resposta: se havia uma em
   // exibição (TTL ainda correndo), ela reassume os pixels 0-5 no próximo
   // update(); o pixel de conexão volta junto.
-  _processing = false;
+  stopSolving();
+  // Este é o caminho do status "idle" (lote limpo), que também encerra a
+  // multicaptura pelo contrato do servidor.
+  stopCapturing();
 }
 
 // ========================================
@@ -213,6 +268,8 @@ void LedController::stopProcessing() {
 void LedController::startHold() {
   _answerActive = true;
   _firstAnswerReceived = true;  // encerra o blackout pós-boot, se ativo
+  stopSolving();    // o answer chegou: a varredura acabou (não espera o idle)
+  stopCapturing();  // answer real: o conjunto foi resolvido
   _mode = MODE_HOLD;
   _animStart = millis();
   allOff();  // começa pelo blank de chegada; renderHold conduz a partir daqui
@@ -247,6 +304,10 @@ void LedController::renderHold(unsigned long now) {
 void LedController::showTestChase() {
   _answerActive = true;
   _firstAnswerReceived = true;  // encerra o blackout pós-boot, se ativo
+  stopSolving();  // o ACK do print chegou: a varredura do solve acabou
+  // NÃO chama stopCapturing(): o chase de test é "print recebido" e PRECEDE
+  // cada capturing no fluxo real (test -> capturing a cada foto parcial).
+  // Limpar aqui só produziria um apagão do pixel 7 entre os dois eventos.
   _mode = MODE_CHASE;
   _animStart = millis();
   allOff();
@@ -271,6 +332,8 @@ void LedController::renderChase(unsigned long now) {
 void LedController::showError() {
   _answerActive = true;
   _firstAnswerReceived = true;  // encerra o blackout pós-boot, se ativo
+  stopSolving();    // o solve terminou (em falha): a varredura acabou
+  stopCapturing();  // erro fecha o modo (contrato do servidor)
   _mode = MODE_ERROR;
   _animStart = millis();
   allOff();
@@ -325,6 +388,8 @@ void LedController::showMultiple(const uint8_t* pos, uint8_t n) {
 void LedController::startSeq() {
   _answerActive = true;
   _firstAnswerReceived = true;  // encerra o blackout pós-boot, se ativo
+  stopSolving();    // o answer chegou: a varredura acabou (não espera o idle)
+  stopCapturing();  // answer real: o conjunto foi resolvido
   _mode = MODE_SEQ;
   _animStart = millis();
   allOff();

@@ -9,7 +9,7 @@ Zero `delay()` no caminho de renderização. Zero polling. Zero cabo para atuali
 
 <br>
 
-![Firmware](https://img.shields.io/badge/firmware-v3.5-2ea44f?style=flat-square)
+![Firmware](https://img.shields.io/badge/firmware-v3.8-2ea44f?style=flat-square)
 ![Board](https://img.shields.io/badge/board-ESP32--S3_Super_Mini-E7352C?style=flat-square&logo=espressif&logoColor=white)
 ![Framework](https://img.shields.io/badge/framework-Arduino-00979D?style=flat-square&logo=arduino&logoColor=white)
 ![Build](https://img.shields.io/badge/build-PlatformIO-FF7F00?style=flat-square&logo=platformio&logoColor=white)
@@ -126,8 +126,8 @@ A barra WS2812 usa **um único pino de dados** (GPIO 13). Cada posição de resp
 | **3** | 🔵 Azul     | Resposta 4 / D |
 | **4** | ⚪ Branco   | Resposta 5 / E |
 | **5** | 🟣 Magenta  | Resposta 6 / F |
-| **6** | 🟠 Âmbar / 🟣 Violeta | Status: conexão (âmbar piscando = reconectando; pulso violeta = ocioso, suprimido com resposta em exibição) |
-| **7** | ⚫ Apagado | Apagado fora do `solving` — o processamento é a varredura vermelha na barra inteira |
+| **6** | 🟠 Âmbar / 🟣 Violeta | Status: conexão (âmbar piscando = reconectando; pulso violeta = ocioso, suprimido com resposta em exibição ou multicaptura ativa) |
+| **7** | 🩵 Ciano | Status: multicaptura (`capturing`) — respiração ciano enquanto o servidor aguarda a próxima foto; apagado fora dela. O `solving` não usa este pixel: é a varredura vermelha na barra inteira |
 
 ```
    ESP32-S3 Super Mini              Barra WS2812 (8 px)
@@ -178,6 +178,7 @@ têm precedência e sobrevivem a reboot.
 | Conexão / ocioso / boot | `LED_CONN_BLINK_MS`, `LED_IDLE_PERIOD_MS`, `LED_IDLE_PULSE_MS`, `LED_BOOT_BLINK_MS` |
 | Resposta retida | `LED_HOLD_TTL_MS`, `LED_HOLD_INTAKE_MS`, `LED_YESNO_BLINK_MS` |
 | Processando (varredura) | `LED_SOLVE_COLOR`, `LED_SOLVE_SPAN`, `LED_SOLVE_STEP_MS`, `LED_SOLVE_TRAIL`, `LED_SOLVE_FADE` |
+| Multicaptura (respiração) | `LED_CAPTURE_COLOR`, `LED_CAPTURE_PERIOD_MS`, `LED_CAPTURE_STEP_MS`, `LED_CAPTURE_MIN`, `LED_CAPTURE_MAX` |
 | Teste / erro / sequências | `LED_CHASE_*`, `LED_ERROR_*`, `LED_SEQ_*` |
 | OTA | `OTA_HOSTNAME`, `OTA_PASSWORD` |
 | Serial e JSON | `SERIAL_BAUD_RATE`, `JSON_DOC_SIZE` |
@@ -245,7 +246,23 @@ data: {"state":"idle","activeSolves":0}
 **Sequência normal de um solve:** `status solving` → `answer` → `status idle`.
 **Em falha:** `status solving` → `status error` (**sem** `answer`).
 Ao abrir a conexão o servidor manda um `status` com o estado atual — reconectar no meio de um
-processamento já traz `solving`.
+processamento já traz `solving` (ou `capturing`, se houver print parqueado).
+
+**Print parcial (multicaptura, servidor v2.9+):** quando uma foto sozinha não basta para responder
+— questão com **vários dropdowns** (só uma lista abre por foto) ou **painel de case study** — o
+servidor parqueia o print e aguarda a próxima foto da mesma questão:
+
+```text
+event: answer
+data: {"hasData":false,"questionType":"test","letters":[],"answerText":"-"}
+
+event: status
+data: {"state":"capturing","activeSolves":0}
+```
+
+O `capturing` chega logo após o `answer` de `test` ("print recebido") e **substitui o `idle`
+final**: vira o estado-base até chegar `solving`, um `answer` real, `idle` (lote limpo) ou `error`.
+A foto que fecha o conjunto retoma o fluxo normal: `solving` → `answer` → `idle`.
 
 <details>
 <summary><b>Payload do evento <code>answer</code></b> (<code>SolverOutput</code>)</summary>
@@ -276,7 +293,7 @@ mais filtro; o uso do pool é logado a cada `answer` (`[JSON] pool=`).
 
 | Campo | Tipo | Significado |
 |---|---|---|
-| `state` | string | `solving` (aguardando a IA), `idle` (ocioso) ou `error` (o processamento falhou) |
+| `state` | string | `solving` (aguardando a IA), `capturing` (print parqueado, aguardando a próxima foto), `idle` (ocioso) ou `error` (o processamento falhou) |
 | `activeSolves` | int | Quantas requisições estão em andamento no servidor (informativo, só vai para o log) |
 
 Um `state` desconhecido é tratado como `idle`, conforme a spec.
@@ -288,27 +305,30 @@ Um `state` desconhecido é tratado como `idle`, conforme a spec.
 ## A linguagem dos LEDs
 
 Desde a v3.2 a barra tem **dois canais independentes**: os pixels **0–5** carregam só as
-**respostas (A–F)**, e os pixels **6–7** são o **status dedicado** (conexão e processamento).
+**respostas (A–F)**, e os pixels **6–7** são o **status dedicado** (conexão e multicaptura).
 Um `answer` novo sempre interrompe a exibição atual; o status nunca interfere na resposta.
 
 ```
-Notação:   ●  aceso fixo      ◐  piscando      ·  apagado
-Ordem:     A  B  C  D  E  F | S₆ S₇   →  respostas 1–6 | conexão, processamento
+Notação:   ●  aceso fixo      ◐  piscando      ◐̴  respirando      ·  apagado
+Ordem:     A  B  C  D  E  F | S₆ S₇   →  respostas 1–6 | conexão, multicaptura
 Cores:     A=verde B=amarelo C=vermelho D=azul E=branco F=magenta
 ```
 
-### Status — pixels 6 (conexão) e 7 (processamento)
+### Status — pixels 6 (conexão) e 7 (multicaptura)
 
 | Situação | Pixel | Padrão |
 |---|:---:|---|
 | Conectando / sem WiFi / reconectando | 6 | Âmbar piscando ~150 ms |
-| Conectado, ocioso | 6 | Heartbeat violeta: 1 pulso de ~80 ms a cada ~2 s — **suprimido enquanto uma resposta está em exibição** |
-| `status: solving` | 0–7 | **Varredura vermelha vai-e-vem** (Larson scanner) com rastro em fading na **barra inteira**, **sem TTL**, até chegar `answer`, `error` ou `idle`. Toma a barra enquanto dura (a resposta em exibição e o pixel de conexão reassumem ao terminar) e encerra a janela de silêncio do boot |
-| `status: idle` | — | Varredura encerrada; resposta/conexão reassumem. Fora do solving o pixel 7 fica apagado |
+| Conectado, ocioso | 6 | Heartbeat violeta: 1 pulso de ~80 ms a cada ~2 s — **suprimido enquanto uma resposta está em exibição ou a multicaptura está ativa** |
+| `status: solving` | 0–7 | **Varredura vermelha vai-e-vem** (Larson scanner) com rastro em fading na **barra inteira**, **sem TTL**, até chegar `answer` (real ou `test`), `error`, `idle` ou `capturing`. Toma a barra enquanto dura (a resposta em exibição e o pixel de conexão reassumem ao terminar) e encerra a janela de silêncio do boot |
+| `status: capturing` | 7 | **Respiração ciano** (~1,6 s por ciclo), **sem TTL**, até chegar `solving`, um `answer` real, `idle` ou `error`. Não disputa pixel com nada: a resposta em exibição e o pixel de conexão seguem normais |
+| `status: idle` | — | Varredura e multicaptura encerradas; resposta/conexão reassumem |
 
 `status: error` usa o padrão de erro nos pixels de resposta (abaixo). Se o stream cair durante um
 `solving`, a varredura é **abortada** (senão a queda ficaria escondida atrás dela); ao reabrir, o
-`status` inicial do servidor ressincroniza.
+`status` inicial do servidor ressincroniza. A multicaptura, ao contrário, **sobrevive à queda**: o
+print continua parqueado no servidor e o âmbar do pixel 6 já sinaliza a reconexão. O chase de
+`test` **não** encerra a multicaptura — no fluxo real ele precede cada `capturing`.
 
 ### Resposta — evento `answer` (pixels 0–5)
 
@@ -333,8 +353,8 @@ Ao ligar, a barra sinaliza status normalmente por **`LED_BOOT_BLINK_MS` (5 min)*
 depois entra em **blackout total** (respostas e status apagados) até a **1ª resposta** do backend.
 
 Durante o blackout o stream continua ativo — ping a cada 15 s e logs na serial — **só a saída dos
-LEDs é suprimida**. Qualquer evento `answer` (inclusive `test` ou erro) **ou um `status: solving`**
-encerra o blackout **em definitivo**: ele não rearma. Se a 1ª resposta chegar antes dos 5 min, o
+LEDs é suprimida**. Qualquer evento `answer` (inclusive `test` ou erro) **ou um `status: solving` /
+`capturing`** encerra o blackout **em definitivo**: ele não rearma. Se a 1ª resposta chegar antes dos 5 min, o
 blackout nunca acontece.
 
 ---
@@ -369,6 +389,7 @@ replay, um `answer` emitido durante a janela de reconexão chega assim que o str
 | 4 | **`yesno`** | Pixels das afirmações acesos ao mesmo tempo — Sim fixo, Não piscando |
 | 5 | **Processando (`status`)** | `POST` real (sem `Test`) → varredura vermelha vai-e-vem na barra inteira imediatamente e durante todo o processamento; ao chegar o `answer`, ela para e a resposta aparece (com o heartbeat do pixel 6 suprimido durante a exibição); o `idle` seguinte **não** apaga a resposta. Se falhar, chega `status error` → os 6 pixels de resposta piscando 3× |
 | 6 | **`dropdown` / `ordering` / `matching`** | Sequência acendendo a posição de cada slot |
+| 6b | **Multicaptura (`capturing`)** | Fotografe uma questão com **vários dropdowns** (ou um painel de case study): chase de `test` → pixel 7 respirando em ciano (heartbeat violeta do 6 some). Fotografe o restante → o último print dispara `solving` → `answer` → `idle` e o ciano apaga. Derrube o WiFi no meio: o ciano **continua** (só o pixel 6 vai a âmbar) |
 | 7 | **Ilegível** | Force `hasData=false` → os 6 pixels de resposta piscando juntos 3× |
 | 8 | **Reconexão** | Derrube WiFi/servidor → pixel 6 piscando âmbar + log de backoff; ao voltar, reconecta e o backoff zera |
 | 9 | **Heap** | Acompanhe `[HEAP] livre=` (a cada 10 s) — deve permanecer estável após muitos eventos e reconexões |
@@ -392,6 +413,8 @@ replay, um `answer` emitido durante a janela de reconexão chega assim que o str
 
 | Versão | Mudança |
 |:---:|---|
+| **3.7** | Novo estado `status: capturing` (multicaptura do servidor v2.9+): print parqueado aguardando a próxima foto → respiração ciano no pixel 7, sobrevivendo a reconexões |
+| **3.6** | Varredura vermelha vai-e-vem (Larson scanner) na barra inteira para o `solving`, no lugar do pisca ciano do pixel 7; heartbeat violeta suprimido com resposta em exibição |
 | **3.5** | OTA pela rede (ArduinoOTA/espota) + configuração em NVS com CLI serial (`config set ...`) — atualização e troca de endpoint sem cabo/recompilação |
 | **3.4** | Replay pós-reconexão: `Last-Event-ID` no `GET` + `retry:` do servidor honrado — eventos emitidos durante a reconexão deixam de ser perdidos |
 | **3.3** | Dual-core: rede/parse na `netTask` (core 0), LEDs na uiTask (core 1) — a animação não congela mais durante `connect()`/reconexões |
